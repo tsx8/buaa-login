@@ -1,6 +1,6 @@
 # buaa-login
 
-![Build Status](https://img.shields.io/github/actions/workflow/status/tsx8/buaa-login/release.yml)
+![Build Status](https://img.shields.io/github/actions/workflow/status/tsx8/buaa_login/ci.yml)
 ![Go Version](https://img.shields.io/badge/Go-1.25.3-blue)
 
 **buaa-login** 是一个用 Go 语言编写的命令行工具，用于自动登录北京航空航天大学（BUAA）校园网网关。
