@@ -1,0 +1,36 @@
+name: Nix Flake Check
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    paths:
+      - '**.nix'
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'flake.lock'
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  nix-check:
+    name: Nix Check & Build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check Flake Metadata
+        run: nix flake check
+
+      - name: Build Default Package
+        run: nix build -L

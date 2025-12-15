@@ -1,0 +1,63 @@
+name: CI Build
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  build-check:
+    name: Build Check (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          check-latest: false
+
+      - name: Build Binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          BINARY_NAME="buaa-login"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BINARY_NAME="${BINARY_NAME}.exe"
+          fi
+          
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          go build -ldflags "-s -w -X main.Version=${SHORT_SHA}" \
+            -o "dist/$BINARY_NAME" \
+            ./cmd/buaa-login
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: buaa-login-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          retention-days: 3

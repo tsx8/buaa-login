@@ -1,0 +1,126 @@
+name: Manual Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Version (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+      create_tag:
+        description: 'Create git tag if missing?'
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-all:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Build and Package
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+          VERSION: ${{ inputs.tag_name }}
+        run: |
+          BINARY_NAME="buaa-login"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BINARY_NAME="${BINARY_NAME}.exe"
+          fi
+          
+          go build -ldflags "-s -w -X main.Version=${VERSION}" \
+            -o "$BINARY_NAME" \
+            ./cmd/buaa-login
+          
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            ARCHIVE_NAME="buaa-login-${{ matrix.goos }}-${{ matrix.goarch }}.zip"
+            zip "$ARCHIVE_NAME" "$BINARY_NAME"
+          else
+            ARCHIVE_NAME="buaa-login-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz"
+            tar -czvf "$ARCHIVE_NAME" "$BINARY_NAME"
+          fi
+          
+          mkdir dist
+          mv "$ARCHIVE_NAME" dist/
+
+      - name: Upload Artifacts for Release
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          retention-days: 1
+
+  create-release:
+    name: Create & Publish Release
+    needs: build-all
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create Git Tag
+        if: ${{ inputs.create_tag }}
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          
+          # 如果标签已存在，先删除它（为了覆盖）
+          if git rev-parse "${{ inputs.tag_name }}" >/dev/null 2>&1; then
+            echo "Tag exists, forcing update..."
+            git tag -d "${{ inputs.tag_name }}"
+            git push origin :refs/tags/${{ inputs.tag_name }}
+          fi
+          
+          git tag ${{ inputs.tag_name }}
+          git push origin ${{ inputs.tag_name }}
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-assets-*
+          path: all_assets
+          merge-multiple: true
+
+      - name: Display Downloaded Files
+        run: ls -R all_assets
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name }}
+          name: Release ${{ inputs.tag_name }}
+          files: all_assets/*
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          make_latest: true
+          fail_on_unmatched_files: true
