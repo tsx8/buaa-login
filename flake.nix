@@ -10,19 +10,20 @@
       supportedSystems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
       nixpkgsFor = system: nixpkgs.legacyPackages.${system};
+      version = nixpkgs.lib.strings.fileContents ./VERSION;
     in
     {
       packages = forAllSystems (system:
         let pkgs = nixpkgsFor system; in {
           default = pkgs.buildGoModule {
             pname = "buaa-login";
-            version = "1.1.0";
+            inherit version;
             src = ./.;
             vendorHash = null;
             subPackages = [ "cmd/buaa-login" ];
             ldflags = [ 
               "-s" "-w" 
-              "-X main.Version=${self.packages.${system}.default.version}" 
+              "-X main.Version=v${version}" 
             ];
             meta = with pkgs.lib; {
               description = "BUAA Campus Network Login Tool";
