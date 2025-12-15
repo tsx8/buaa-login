@@ -15,6 +15,17 @@ in
       description = "The buaa-login package to use.";
     };
 
+    interval = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "15min";
+      description = ''
+        Time interval for periodic login checks.
+        If set (e.g., "15min", "1h"), a systemd timer will trigger the login attempt periodically.
+        If null, the service runs in 'keep-alive' mode (restarts immediately on failure).
+      '';
+    };
+
     configFile = mkOption {
       type = types.nullOr types.path;
       default = null;
@@ -53,15 +64,15 @@ in
       description = "BUAA Campus Network Auto Login";
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
-      wantedBy = [ "multi-user.target" ];
+      wantedBy = if cfg.interval == null then [ "multi-user.target" ] else [];
 
       startLimitIntervalSec = 0;
 
       serviceConfig = {
         Type = "oneshot";
-        Restart = "on-failure";
+        Restart = if cfg.interval != null then "no" else "on-failure";
         RestartSec = "10s";
-        User = "root"; 
+        User = "root";  
         
         ExecStart = pkgs.writeShellScript "buaa-login-start" ''
           if [ -n "${toString cfg.configFile}" ]; then
@@ -83,6 +94,16 @@ in
 
           exec ${cfg.package}/bin/buaa-login -i "$USER_ID" -p "$USER_PWD"
         '';
+      };
+
+      systemd.timers.buaa-login = mkIf (cfg.interval != null) {
+        description = "Periodic Timer for BUAA Campus Network Login";
+        wantedBy = [ "timers.target" ];
+        timerConfig = {
+          OnBootSec = "1m";
+          OnUnitActiveSec = cfg.interval;
+          Unit = "buaa-login.service";
+        };
       };
     };
   };
