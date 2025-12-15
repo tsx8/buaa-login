@@ -91,15 +91,14 @@ in
           exec ${cfg.package}/bin/buaa-login -i "$USER_ID" -p "$USER_PWD" -r 0
         '';
       };
-
-      systemd.timers.buaa-login = mkIf (cfg.interval != null) {
-        description = "Periodic Timer for BUAA Login";
-        wantedBy = [ "timers.target" ];
-        timerConfig = {
-          OnBootSec = "1m";
-          OnUnitActiveSec = cfg.interval;
-          Unit = "buaa-login.service";
-        };
+    };
+    systemd.timers.buaa-login = mkIf (cfg.interval != null) {
+      description = "Periodic Timer for BUAA Login";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "1m";
+        OnUnitActiveSec = cfg.interval;
+        Unit = "buaa-login.service";
       };
     };
   };
