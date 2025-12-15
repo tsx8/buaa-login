@@ -28,6 +28,12 @@ in
       '';
     };
 
+    retry = mkOption {
+      type = types.int;
+      default = 3;
+      description = "Max retry times on login failure.";
+    };
+
     configFile = mkOption {
       type = types.nullOr types.path;
       default = null;
@@ -92,7 +98,7 @@ in
              exit 1
           fi
 
-          exec ${cfg.package}/bin/buaa-login -i "$USER_ID" -p "$USER_PWD" -r 0
+          exec ${cfg.package}/bin/buaa-login -i "$USER_ID" -p "$USER_PWD" -r ${toString cfg.retry}
         '';
       };
     };
