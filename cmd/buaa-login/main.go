@@ -26,9 +26,9 @@ func main() {
 	flag.Parse()
 
 	if showVer {
-        fmt.Printf("buaa-login version: %s\n", getVersion())
-        return
-    }
+		fmt.Printf("buaa-login version: %s\n", getVersion())
+		return
+	}
 
 	if id == "" || pwd == "" {
 		flag.Usage()
@@ -38,7 +38,7 @@ func main() {
 	id = strings.ToLower(strings.TrimSpace(id))
 	client := login.New(id, pwd)
 	totalAttempts := 1 + maxRetry
-	
+
 	for i := range totalAttempts {
 		if i > 0 {
 			fmt.Printf("Retry attempt %d/%d after 2 seconds...\n", i, maxRetry)
@@ -46,7 +46,7 @@ func main() {
 		}
 
 		success, res, err := client.Run()
-		
+
 		if err != nil {
 			log.Printf("Attempt %d error: %v", i+1, err)
 		} else if success {

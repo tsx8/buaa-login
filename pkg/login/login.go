@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"regexp"
 	"time"
@@ -14,20 +15,22 @@ import (
 )
 
 type Client struct {
-	ID       string
-	Pwd      string
-	BaseURL  string
-	Client   *http.Client
-	Header   http.Header
+	ID      string
+	Pwd     string
+	BaseURL string
+	Client  *http.Client
+	Header  http.Header
 }
 
 func New(id, pwd string) *Client {
+	jar, _ := cookiejar.New(nil)
 	return &Client{
 		ID:      id,
 		Pwd:     pwd,
 		BaseURL: "https://gw.buaa.edu.cn",
 		Client: &http.Client{
 			Timeout: 10 * time.Second,
+			Jar:     jar,
 		},
 		Header: http.Header{
 			"User-Agent": []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0"},
@@ -56,6 +59,15 @@ func (c *Client) Run() (bool, map[string]interface{}, error) {
 	}
 	ip := string(ipMatch[1])
 
+	acidRegex := regexp.MustCompile(`id="ac_id" value="(.*?)"`)
+	acidMatch := acidRegex.FindSubmatch(bodyInit)
+	var acid string
+	if len(acidMatch) >= 2 {
+		acid = string(acidMatch[1])
+	} else {
+		acid = "1" // 如果提取失败，回退到默认值
+	}
+
 	timestamp := fmt.Sprintf("%d", time.Now().UnixMilli())
 
 	params := url.Values{}
@@ -67,7 +79,7 @@ func (c *Client) Run() (bool, map[string]interface{}, error) {
 	reqChal, _ := http.NewRequest("GET", c.BaseURL+"/cgi-bin/get_challenge", nil)
 	reqChal.URL.RawQuery = params.Encode()
 	reqChal.Header = c.Header
-	
+
 	respChal, err := c.Client.Do(reqChal)
 	if err != nil {
 		return false, nil, fmt.Errorf("get_challenge failed: %v", err)
@@ -86,16 +98,16 @@ func (c *Client) Run() (bool, map[string]interface{}, error) {
 		"username": c.ID,
 		"password": c.Pwd,
 		"ip":       ip,
-		"acid":     "1",
+		"acid":     acid,
 		"enc_var":  "srun_bx1",
 	}
 	infoBytes, _ := json.Marshal(infoData)
 	infoStr := string(infoBytes)
-	
+
 	encInfo := "{SRBX1}" + srun.GetBase64(srun.GetXEncode(infoStr, token))
 	md5Pwd := srun.GetMD5(c.Pwd, token)
-	
-	chkstr := token + c.ID + token + md5Pwd + token + "1" + token + ip + token + "200" + token + "1" + token + encInfo
+
+	chkstr := token + c.ID + token + md5Pwd + token + acid + token + ip + token + "200" + token + "1" + token + encInfo
 	chksum := srun.GetSHA1(chkstr)
 
 	loginParams := url.Values{}
@@ -103,7 +115,7 @@ func (c *Client) Run() (bool, map[string]interface{}, error) {
 	loginParams.Set("action", "login")
 	loginParams.Set("username", c.ID)
 	loginParams.Set("password", "{MD5}"+md5Pwd)
-	loginParams.Set("ac_id", "1")
+	loginParams.Set("ac_id", acid)
 	loginParams.Set("ip", ip)
 	loginParams.Set("chksum", chksum)
 	loginParams.Set("info", encInfo)
@@ -141,7 +153,7 @@ func (c *Client) Run() (bool, map[string]interface{}, error) {
 	if ok && resCode == "ok" {
 		return true, result, nil
 	}
-	
+
 	if resCode == "sign_error" || resCode == "challenge_expire_error" {
 		return false, result, nil
 	}
