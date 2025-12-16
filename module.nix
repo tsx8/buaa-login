@@ -28,6 +28,11 @@ in
       '';
     };
 
+    wakeUp = {
+      enable = mkEnableOption "Run login check on wake up from sleep/suspend";
+      default = true; 
+    };
+
     retry = mkOption {
       type = types.int;
       default = 3;
@@ -65,9 +70,14 @@ in
 
     systemd.services.buaa-login = {
       description = "BUAA Campus Network Auto Login";
-      after = [ "network-online.target" ];
+      after = [ "network-online.target" "sleep.target" ];
       wants = [ "network-online.target" ];
-      wantedBy = if cfg.interval == null then [ "multi-user.target" ] else [];
+      wantedBy = 
+        let
+          bootTargets = if cfg.interval == null then [ "multi-user.target" ] else [];
+          wakeUpTargets = mkIf cfg.wakeUp.enable [ "sleep.target" ];
+        in
+          bootTargets ++ wakeUpTargets;
 
       startLimitIntervalSec = 60;
       startLimitBurst = 5;
