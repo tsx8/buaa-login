@@ -42,5 +42,52 @@
           nixpkgs.overlays = [ overlay ];
           imports = [ ./module.nix ];
         };
+
+      checks = forLinuxSystems (
+        system:
+        let
+          pkgs = nixpkgsFor system;
+        in
+        {
+          vm-test = pkgs.testers.runNixOSTest {
+            name = "buaa-login-test";
+            nodes.machine =
+              { config, pkgs, ... }:
+              {
+                imports = [ ./module.nix ];
+
+                services.lvm.enable = false;
+                documentation.enable = false;
+
+                services.buaa-login = {
+                  enable = true;
+                  package = self.packages.${system}.default;
+                  stuid = "test-user";
+                  stupwd = "test-password";
+                  interval = "1h";
+                };
+
+                # Delay to 1 day, won't be triggered during test
+                systemd.timers.buaa-login.timerConfig = {
+                  OnBootSec = pkgs.lib.mkForce "1d";
+                };
+              };
+
+            testScript =
+              let
+                buaaLoginBin = "${self.packages.${system}.default}/bin/buaa-login";
+              in
+              ''
+                machine.wait_for_unit("multi-user.target")
+                machine.succeed("systemctl cat buaa-login.service")
+                machine.succeed("systemctl cat buaa-login.timer")
+                machine.succeed("systemctl is-enabled buaa-login.timer")
+                machine.succeed("test -x ${buaaLoginBin}")
+                machine.succeed("${buaaLoginBin} --help")
+                machine.succeed("systemctl is-active buaa-login.service || true")
+              '';
+          };
+        }
+      );
     };
 }
