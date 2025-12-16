@@ -74,7 +74,7 @@ in
       wantedBy = 
         let
           bootTargets = if cfg.interval == null then [ "multi-user.target" ] else [];
-          wakeUpTargets = mkIf cfg.wakeUp [ "sleep.target" ];
+          wakeUpTargets = if cfg.wakeUp then [ "sleep.target" ] else [];
         in
           bootTargets ++ wakeUpTargets;
 
