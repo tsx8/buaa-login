@@ -60,7 +60,9 @@ func main() {
 		}
 
 		printRes(res)
-		if errMsg, ok := res["error"].(string); ok {
+		if errMsg, ok := res["error_msg"].(string); ok && errMsg != "" {
+			log.Printf("Login failed: %s", errMsg)
+		} else if errMsg, ok := res["error"].(string); ok {
 			log.Printf("Login failed: %s", errMsg)
 		} else {
 			log.Printf("Login failed (unknown error)")
