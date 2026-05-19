@@ -1,14 +1,17 @@
 package login
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
 	"regexp"
 	"time"
 
@@ -21,25 +24,61 @@ type Client struct {
 	BaseURL string
 	Client  *http.Client
 	Header  http.Header
+	Iface   string
 }
 
-func New(id, pwd string) *Client {
+func New(id, pwd string, iface string) *Client {
 	jar, _ := cookiejar.New(nil)
+
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+
+	if iface != "" {
+		ifaceObj, err := net.InterfaceByName(iface)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: interface %s not found: %v\n", iface, err)
+		} else {
+			transport.DialContext = createDialContext(iface, ifaceObj)
+		}
+	}
+
 	return &Client{
 		ID:      id,
 		Pwd:     pwd,
 		BaseURL: "https://gw.buaa.edu.cn",
 		Client: &http.Client{
-			Timeout: 10 * time.Second,
-			Jar:     jar,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
+			Timeout:   10 * time.Second,
+			Jar:       jar,
+			Transport: transport,
 		},
 		Header: http.Header{
 			"User-Agent": []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0"},
 		},
+		Iface: iface,
 	}
+}
+
+func createDialContext(ifaceName string, iface *net.Interface) func(context.Context, string, string) (net.Conn, error) {
+	dialer := &net.Dialer{
+		Timeout: 10 * time.Second,
+	}
+
+	addrs, err := iface.Addrs()
+	if err == nil && len(addrs) > 0 {
+		for _, a := range addrs {
+			if ipNet, ok := a.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
+				if ipNet.IP.To4() != nil {
+					dialer.LocalAddr = &net.TCPAddr{IP: ipNet.IP}
+					break
+				}
+			}
+		}
+	}
+
+	dialer.Control = createControlFunc(ifaceName)
+
+	return dialer.DialContext
 }
 
 func (c *Client) Run() (bool, map[string]interface{}, error) {

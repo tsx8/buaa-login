@@ -15,12 +15,13 @@ import (
 var Version = "dev"
 
 func main() {
-	var id, pwd string
+	var id, pwd, iface string
 	var maxRetry int
 	var showVer bool
 
 	flag.StringVar(&id, "i", "", "Student ID")
 	flag.StringVar(&pwd, "p", "", "Password")
+	flag.StringVar(&iface, "iface", "", "Network interface to bind to (e.g., eth0)")
 	flag.IntVar(&maxRetry, "r", 0, "Max retry times (default 0)")
 	flag.BoolVar(&showVer, "v", false, "Show version")
 	flag.Parse()
@@ -36,7 +37,7 @@ func main() {
 	}
 
 	id = strings.ToLower(strings.TrimSpace(id))
-	client := login.New(id, pwd)
+	client := login.New(id, pwd, iface)
 	totalAttempts := 1 + maxRetry
 
 	for i := range totalAttempts {
