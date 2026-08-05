@@ -1,6 +1,7 @@
 package login
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/tsx8/buaa-login/pkg/srun"
@@ -28,7 +30,7 @@ func New(id, pwd string) *Client {
 	return &Client{
 		ID:      id,
 		Pwd:     pwd,
-		BaseURL: "https://gw.buaa.edu.cn",
+		BaseURL: "https://10.200.21.4",
 		Client: &http.Client{
 			Timeout: 10 * time.Second,
 			Jar:     jar,
@@ -47,30 +49,33 @@ func (c *Client) Run() (bool, map[string]interface{}, error) {
 		return false, nil, errors.New("id or password missing")
 	}
 
-	reqInit, _ := http.NewRequest("GET", c.BaseURL, nil)
-	reqInit.Header = c.Header
-	respInit, err := c.Client.Do(reqInit)
+	baseURL := strings.TrimRight(c.BaseURL, "/")
+	bodyInit, err := c.get(baseURL, nil)
 	if err != nil {
 		return false, nil, fmt.Errorf("init request failed: %v", err)
 	}
-	defer respInit.Body.Close()
-	bodyInit, _ := io.ReadAll(respInit.Body)
 
-	ipRegex := regexp.MustCompile(`id="user_ip" value="(.*?)"`)
-	ipMatch := ipRegex.FindSubmatch(bodyInit)
+	acidRegex := regexp.MustCompile(`ac_id=(\d+)`)
+	acidMatch := acidRegex.FindSubmatch(bodyInit)
+	if len(acidMatch) < 2 {
+		return false, nil, errors.New("failed to extract ac_id from redirect page")
+	}
+	acid := string(acidMatch[1])
+
+	portalParams := url.Values{}
+	portalParams.Set("ac_id", acid)
+	portalParams.Set("theme", "buaa")
+	bodyPortal, err := c.get(baseURL+"/srun_portal_pc", portalParams)
+	if err != nil {
+		return false, nil, fmt.Errorf("portal request failed: %v", err)
+	}
+
+	ipRegex := regexp.MustCompile(`ip\s*:\s*["']([^"']+)["']`)
+	ipMatch := ipRegex.FindSubmatch(bodyPortal)
 	if len(ipMatch) < 2 {
-		return false, nil, errors.New("failed to find user_ip")
+		return false, nil, errors.New("failed to extract ip from portal page")
 	}
 	ip := string(ipMatch[1])
-
-	acidRegex := regexp.MustCompile(`id="ac_id" value="(.*?)"`)
-	acidMatch := acidRegex.FindSubmatch(bodyInit)
-	var acid string
-	if len(acidMatch) >= 2 {
-		acid = string(acidMatch[1])
-	} else {
-		acid = "1"
-	}
 
 	timestamp := fmt.Sprintf("%d", time.Now().UnixMilli())
 
@@ -80,23 +85,19 @@ func (c *Client) Run() (bool, map[string]interface{}, error) {
 	params.Set("ip", ip)
 	params.Set("_", timestamp)
 
-	reqChal, _ := http.NewRequest("GET", c.BaseURL+"/cgi-bin/get_challenge", nil)
-	reqChal.URL.RawQuery = params.Encode()
-	reqChal.Header = c.Header
-
-	respChal, err := c.Client.Do(reqChal)
+	bodyChal, err := c.get(baseURL+"/cgi-bin/get_challenge", params)
 	if err != nil {
 		return false, nil, fmt.Errorf("get_challenge failed: %v", err)
 	}
-	defer respChal.Body.Close()
-	bodyChal, _ := io.ReadAll(respChal.Body)
 
-	tokenRegex := regexp.MustCompile(`"challenge":"(.*?)"`)
-	tokenMatch := tokenRegex.FindSubmatch(bodyChal)
-	if len(tokenMatch) < 2 {
+	challenge, err := parseJSONP(bodyChal)
+	if err != nil {
+		return false, nil, fmt.Errorf("invalid challenge response: %v", err)
+	}
+	token, ok := challenge["challenge"].(string)
+	if !ok || token == "" {
 		return false, nil, errors.New("failed to get challenge token")
 	}
-	token := string(tokenMatch[1])
 
 	infoData := map[string]string{
 		"username": c.ID,
@@ -130,37 +131,61 @@ func (c *Client) Run() (bool, map[string]interface{}, error) {
 	loginParams.Set("double_stack", "0")
 	loginParams.Set("_", fmt.Sprintf("%d", time.Now().UnixMilli()))
 
-	reqLogin, _ := http.NewRequest("GET", c.BaseURL+"/cgi-bin/srun_portal", nil)
-	reqLogin.URL.RawQuery = loginParams.Encode()
-	reqLogin.Header = c.Header
-
-	respLogin, err := c.Client.Do(reqLogin)
+	bodyLogin, err := c.get(baseURL+"/cgi-bin/srun_portal", loginParams)
 	if err != nil {
 		return false, nil, fmt.Errorf("login request failed: %v", err)
 	}
-	defer respLogin.Body.Close()
-	bodyLogin, _ := io.ReadAll(respLogin.Body)
 
-	jsonRegex := regexp.MustCompile(`\(\{.*\}\)`)
-	jsonPart := jsonRegex.Find(bodyLogin)
-	if len(jsonPart) < 2 {
-		return false, nil, fmt.Errorf("invalid login response: %s", string(bodyLogin))
-	}
-	jsonClean := jsonPart[1 : len(jsonPart)-1]
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(jsonClean, &result); err != nil {
-		return false, nil, err
+	result, err := parseJSONP(bodyLogin)
+	if err != nil {
+		return false, nil, fmt.Errorf("invalid login response: %v", err)
 	}
 
-	resCode, ok := result["res"].(string)
-	if ok && resCode == "ok" {
+	if result["error"] == "ok" || result["res"] == "ok" {
 		return true, result, nil
 	}
 
+	resCode, _ := result["res"].(string)
 	if resCode == "sign_error" || resCode == "challenge_expire_error" {
 		return false, result, nil
 	}
 
 	return false, result, errors.New("login returned non-ok status")
+}
+
+func (c *Client) get(rawURL string, params url.Values) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if params != nil {
+		req.URL.RawQuery = params.Encode()
+	}
+	req.Header = c.Header.Clone()
+
+	resp, err := c.Client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("unexpected HTTP status %s", resp.Status)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+func parseJSONP(body []byte) (map[string]interface{}, error) {
+	body = bytes.TrimSpace(body)
+	open := bytes.IndexByte(body, '(')
+	close := bytes.LastIndexByte(body, ')')
+	if open < 0 || close <= open {
+		return nil, errors.New("missing JSONP wrapper")
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(body[open+1:close], &result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
