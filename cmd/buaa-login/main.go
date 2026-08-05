@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -14,13 +16,16 @@ import (
 
 var Version = "dev"
 
+var unquotedCredentialKey = regexp.MustCompile(`([,{]\s*)(stuid|paswd)\s*:`)
+
 func main() {
-	var id, pwd string
+	var id, pwd, credentialsFile string
 	var maxRetry int
 	var showVer bool
 
 	flag.StringVar(&id, "i", "", "Student ID")
 	flag.StringVar(&pwd, "p", "", "Password")
+	flag.StringVar(&credentialsFile, "credentials-file", "", "Path to a JSON credentials file")
 	flag.IntVar(&maxRetry, "r", 0, "Max retry times (default 0)")
 	flag.BoolVar(&showVer, "v", false, "Show version")
 	flag.Parse()
@@ -28,6 +33,19 @@ func main() {
 	if showVer {
 		fmt.Printf("buaa-login version: %s\n", getVersion())
 		return
+	}
+
+	if credentialsFile != "" {
+		if id != "" || pwd != "" {
+			fmt.Fprintln(os.Stderr, "credentials-file cannot be combined with -i or -p")
+			os.Exit(2)
+		}
+		var err error
+		id, pwd, err = readCredentials(credentialsFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to read credentials: %v\n", err)
+			os.Exit(2)
+		}
 	}
 
 	if id == "" || pwd == "" {
@@ -68,6 +86,28 @@ func main() {
 
 	fmt.Println("All attempts failed.")
 	os.Exit(1)
+}
+
+func readCredentials(path string) (string, string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", err
+	}
+
+	var credentials struct {
+		ID       string `json:"stuid"`
+		Password string `json:"paswd"`
+	}
+	if err := json.Unmarshal(data, &credentials); err != nil {
+		normalized := unquotedCredentialKey.ReplaceAll(data, []byte(`${1}"${2}":`))
+		if normalizedErr := json.Unmarshal(normalized, &credentials); normalizedErr != nil {
+			return "", "", fmt.Errorf("invalid JSON: %w", err)
+		}
+	}
+	if strings.TrimSpace(credentials.ID) == "" || credentials.Password == "" {
+		return "", "", fmt.Errorf("stuid and paswd must both be non-empty")
+	}
+	return credentials.ID, credentials.Password, nil
 }
 
 func getVersion() string {

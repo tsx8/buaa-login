@@ -2,42 +2,46 @@ name: Nix CI
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [main, master]
     paths:
-      - '**.nix'
-      - '**.go'
-      - 'go.mod'
-      - 'go.sum'
-      - 'flake.lock'
-      - '.github/workflows/**'
+      - "**.nix"
+      - "**.go"
+      - go.mod
+      - go.sum
+      - VERSION
+      - flake.lock
+      - .github/workflows/**
   pull_request:
-    branches: [ "main", "master" ]
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
-    name: Check
-    runs-on: ubuntu-latest
+    name: Flake checks
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Configure Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-flakehub: false
 
-      - name: Run Statix (Nix linter)
-        run: nix run nixpkgs#statix -- check .
+      - name: Evaluate every supported system
+        run: nix flake check --all-systems --no-build
 
-      - name: Check Nix formatting
-        run: nix run nixpkgs#nixfmt-rfc-style -- --check *.nix
+      - name: Build checks for the runner system
+        run: nix flake check --print-build-logs
 
-      - name: Check Flake
-        run: nix flake check -v
-
-      - name: Build Default Package
-        run: nix build -L
-
-      - name: Verify Build Output
-        run: ./result/bin/buaa-login --help || true
-
-      - name: Run NixOS VM Test
-        run: nix build .#checks.x86_64-linux.vm-test -L
+      - name: Smoke-test the packaged command
+        run: nix run . -- --help
