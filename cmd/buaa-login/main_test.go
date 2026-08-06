@@ -1,10 +1,24 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/tsx8/buaa-login/pkg/login"
 )
+
+type stubLoginRunner struct {
+	err   error
+	calls int
+}
+
+func (s *stubLoginRunner) Run() (bool, map[string]interface{}, error) {
+	s.calls++
+	return s.err == nil, nil, s.err
+}
 
 func TestReadCredentials(t *testing.T) {
 	for name, content := range map[string]string{
@@ -36,5 +50,82 @@ func TestReadCredentialsRejectsIncompleteFile(t *testing.T) {
 
 	if _, _, err := readCredentials(path); err == nil {
 		t.Fatal("readCredentials() error = nil, want incomplete credentials error")
+	}
+}
+
+func TestRunReturnsStableExitCodes(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		maxRetry   string
+		wantCode   int
+		wantCalls  int
+		wantSleeps int
+	}{
+		{name: "success", wantCode: exitSuccess, wantCalls: 1},
+		{
+			name:      "authentication rejection",
+			err:       &login.Error{Kind: login.ErrorAuthentication, Operation: "login", Code: "password_error", Message: "rejected"},
+			maxRetry:  "3",
+			wantCode:  exitAuthentication,
+			wantCalls: 1,
+		},
+		{
+			name:       "transient exhaustion",
+			err:        &login.Error{Kind: login.ErrorTransient, Operation: "login", Message: "temporary failure"},
+			maxRetry:   "2",
+			wantCode:   exitTransient,
+			wantCalls:  3,
+			wantSleeps: 2,
+		},
+		{
+			name:      "configuration failure",
+			err:       &login.Error{Kind: login.ErrorConfiguration, Operation: "login", Message: "invalid configuration"},
+			maxRetry:  "3",
+			wantCode:  exitUsage,
+			wantCalls: 1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &stubLoginRunner{err: test.err}
+			var stdout, stderr bytes.Buffer
+			sleeps := 0
+			args := []string{"-i", "Student", "-p", "not-logged"}
+			if test.maxRetry != "" {
+				args = append(args, "-r", test.maxRetry)
+			}
+			code := run(args, &stdout, &stderr, func(id, password string) loginRunner {
+				if id != "student" || password != "not-logged" {
+					t.Fatalf("client credentials = (%q, %q), want normalized ID and original password", id, password)
+				}
+				return runner
+			}, func(time.Duration) { sleeps++ })
+
+			if code != test.wantCode || runner.calls != test.wantCalls || sleeps != test.wantSleeps {
+				t.Fatalf("run() = code %d, calls %d, sleeps %d; want %d, %d, %d", code, runner.calls, sleeps, test.wantCode, test.wantCalls, test.wantSleeps)
+			}
+			if bytes.Contains(stderr.Bytes(), []byte("not-logged")) {
+				t.Fatal("stderr contains password")
+			}
+		})
+	}
+}
+
+func TestRunRejectsInvalidCLIConfiguration(t *testing.T) {
+	for _, args := range [][]string{
+		{},
+		{"-i", "student", "-p", "secret", "-r", "-1"},
+		{"-i", "student", "-p", "secret", "unexpected"},
+	} {
+		var stdout, stderr bytes.Buffer
+		code := run(args, &stdout, &stderr, func(string, string) loginRunner {
+			t.Fatal("client must not be created for invalid CLI configuration")
+			return nil
+		}, func(time.Duration) {})
+		if code != exitUsage {
+			t.Fatalf("run(%q) = %d, want %d", args, code, exitUsage)
+		}
 	}
 }

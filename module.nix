@@ -57,6 +57,10 @@ in
         message = "services.buaa-login.credentialsFile must be an absolute runtime path.";
       }
       {
+        assertion = !lib.hasPrefix "${builtins.storeDir}/" cfg.credentialsFile;
+        message = "services.buaa-login.credentialsFile must be outside the Nix store.";
+      }
+      {
         assertion = cfg.interval == null || cfg.interval != "";
         message = "services.buaa-login.interval must be null or a non-empty systemd time span.";
       }
@@ -69,13 +73,13 @@ in
         wants = [ "network-online.target" ];
         wantedBy = lib.optionals (cfg.interval == null) [ "multi-user.target" ];
 
-        startLimitIntervalSec = 60;
-        startLimitBurst = 5;
+        startLimitIntervalSec = 0;
 
         serviceConfig = {
           Type = "oneshot";
           Restart = "on-failure";
-          RestartSec = "5s";
+          RestartSec = "30s";
+          RestartPreventExitStatus = "2 3";
           DynamicUser = true;
 
           LoadCredential = "buaa-login:${cfg.credentialsFile}";

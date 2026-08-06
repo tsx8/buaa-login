@@ -17,6 +17,11 @@ import (
 	"github.com/tsx8/buaa-login/pkg/srun"
 )
 
+const (
+	defaultGatewayURL = "https://10.200.21.4"
+	gatewayTLSName    = "gw.buaa.edu.cn"
+)
+
 type Client struct {
 	ID      string
 	Pwd     string
@@ -30,12 +35,15 @@ func New(id, pwd string) *Client {
 	return &Client{
 		ID:      id,
 		Pwd:     pwd,
-		BaseURL: "https://10.200.21.4",
+		BaseURL: defaultGatewayURL,
 		Client: &http.Client{
 			Timeout: 10 * time.Second,
 			Jar:     jar,
 			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+				TLSClientConfig: &tls.Config{
+					MinVersion: tls.VersionTLS12,
+					ServerName: gatewayTLSName,
+				},
 			},
 		},
 		Header: http.Header{
@@ -46,19 +54,23 @@ func New(id, pwd string) *Client {
 
 func (c *Client) Run() (bool, map[string]interface{}, error) {
 	if c.ID == "" || c.Pwd == "" {
-		return false, nil, errors.New("id or password missing")
+		return false, nil, &Error{
+			Kind:      ErrorConfiguration,
+			Operation: "validate credentials",
+			Message:   "student ID and password must both be non-empty",
+		}
 	}
 
 	baseURL := strings.TrimRight(c.BaseURL, "/")
 	bodyInit, err := c.get(baseURL, nil)
 	if err != nil {
-		return false, nil, fmt.Errorf("init request failed: %v", err)
+		return false, nil, transientError("initialize gateway session", err)
 	}
 
 	acidRegex := regexp.MustCompile(`ac_id=(\d+)`)
 	acidMatch := acidRegex.FindSubmatch(bodyInit)
 	if len(acidMatch) < 2 {
-		return false, nil, errors.New("failed to extract ac_id from redirect page")
+		return false, nil, transientError("discover gateway access controller", errors.New("ac_id is missing"))
 	}
 	acid := string(acidMatch[1])
 
@@ -67,13 +79,13 @@ func (c *Client) Run() (bool, map[string]interface{}, error) {
 	portalParams.Set("theme", "buaa")
 	bodyPortal, err := c.get(baseURL+"/srun_portal_pc", portalParams)
 	if err != nil {
-		return false, nil, fmt.Errorf("portal request failed: %v", err)
+		return false, nil, transientError("load gateway portal", err)
 	}
 
 	ipRegex := regexp.MustCompile(`ip\s*:\s*["']([^"']+)["']`)
 	ipMatch := ipRegex.FindSubmatch(bodyPortal)
 	if len(ipMatch) < 2 {
-		return false, nil, errors.New("failed to extract ip from portal page")
+		return false, nil, transientError("discover client address", errors.New("IP address is missing"))
 	}
 	ip := string(ipMatch[1])
 
@@ -87,16 +99,16 @@ func (c *Client) Run() (bool, map[string]interface{}, error) {
 
 	bodyChal, err := c.get(baseURL+"/cgi-bin/get_challenge", params)
 	if err != nil {
-		return false, nil, fmt.Errorf("get_challenge failed: %v", err)
+		return false, nil, transientError("request login challenge", err)
 	}
 
 	challenge, err := parseJSONP(bodyChal)
 	if err != nil {
-		return false, nil, fmt.Errorf("invalid challenge response: %v", err)
+		return false, nil, transientError("parse login challenge", err)
 	}
 	token, ok := challenge["challenge"].(string)
 	if !ok || token == "" {
-		return false, nil, errors.New("failed to get challenge token")
+		return false, nil, transientError("parse login challenge", errors.New("challenge token is missing"))
 	}
 
 	infoData := map[string]string{
@@ -133,24 +145,67 @@ func (c *Client) Run() (bool, map[string]interface{}, error) {
 
 	bodyLogin, err := c.get(baseURL+"/cgi-bin/srun_portal", loginParams)
 	if err != nil {
-		return false, nil, fmt.Errorf("login request failed: %v", err)
+		return false, nil, transientError("submit login request", err)
 	}
 
 	result, err := parseJSONP(bodyLogin)
 	if err != nil {
-		return false, nil, fmt.Errorf("invalid login response: %v", err)
+		return false, nil, transientError("parse login response", err)
 	}
 
 	if result["error"] == "ok" || result["res"] == "ok" {
 		return true, result, nil
 	}
 
-	resCode, _ := result["res"].(string)
+	resCode := gatewayResultCode(result)
 	if resCode == "sign_error" || resCode == "challenge_expire_error" {
-		return false, result, nil
+		return false, result, &Error{
+			Kind:      ErrorTransient,
+			Operation: "submit login request",
+			Code:      resCode,
+			Message:   "gateway challenge expired",
+		}
 	}
 
-	return false, result, errors.New("login returned non-ok status")
+	return false, result, &Error{
+		Kind:      ErrorAuthentication,
+		Operation: "submit login request",
+		Code:      resCode,
+		Message:   "gateway rejected the login",
+	}
+}
+
+func transientError(operation string, err error) error {
+	return &Error{
+		Kind:      ErrorTransient,
+		Operation: operation,
+		Message:   "temporary failure",
+		Err:       err,
+	}
+}
+
+func gatewayResultCode(result map[string]interface{}) string {
+	for _, key := range []string{"error", "res"} {
+		if value, ok := result[key].(string); ok && value != "" && value != "ok" {
+			return safeGatewayCode(value)
+		}
+	}
+	return "unknown"
+}
+
+func safeGatewayCode(code string) string {
+	if len(code) > 64 {
+		return "unknown"
+	}
+	for _, char := range code {
+		if (char < 'a' || char > 'z') &&
+			(char < 'A' || char > 'Z') &&
+			(char < '0' || char > '9') &&
+			char != '_' && char != '-' && char != '.' {
+			return "unknown"
+		}
+	}
+	return code
 }
 
 func (c *Client) get(rawURL string, params url.Values) ([]byte, error) {
@@ -165,6 +220,10 @@ func (c *Client) get(rawURL string, params url.Values) ([]byte, error) {
 
 	resp, err := c.Client.Do(req)
 	if err != nil {
+		var requestError *url.Error
+		if errors.As(err, &requestError) {
+			err = requestError.Err
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()

@@ -9,7 +9,6 @@
       supportedSystems = [
         "x86_64-linux"
         "aarch64-linux"
-        "x86_64-darwin"
         "aarch64-darwin"
       ];
       linuxSystems = [
@@ -63,7 +62,7 @@
         }
       );
 
-      formatter = forAllSystems (system: (pkgsFor system).nixfmt-rfc-style);
+      formatter = forAllSystems (system: (pkgsFor system).nixfmt);
 
       devShells = forAllSystems (
         system:
@@ -75,7 +74,7 @@
             packages = [
               pkgs.actionlint
               pkgs.go
-              pkgs.nixfmt-rfc-style
+              pkgs.nixfmt
               pkgs.statix
             ];
           };
@@ -94,9 +93,10 @@
       checks = forLinuxSystems (
         system:
         let
+          inherit (nixpkgs) lib;
           pkgs = pkgsFor system;
           package = self.packages.${system}.default;
-          credentials = pkgs.writeText "buaa-login-test-credentials.json" (
+          storeCredentials = pkgs.writeText "buaa-login-test-credentials.json" (
             builtins.toJSON {
               stuid = "test-user";
               paswd = "test-password";
@@ -123,6 +123,30 @@
               }
             ];
           };
+          invalidCredentialsModule = lib.evalModules {
+            specialArgs = { inherit pkgs; };
+            modules = [
+              ./module.nix
+              {
+                options = {
+                  assertions = lib.mkOption {
+                    type = lib.types.listOf lib.types.unspecified;
+                    default = [ ];
+                  };
+                  systemd = lib.mkOption {
+                    type = lib.types.raw;
+                    default = { };
+                  };
+                };
+                config.services.buaa-login = {
+                  enable = true;
+                  package = mockPackage;
+                  credentialsFile = toString storeCredentials;
+                };
+              }
+            ];
+          };
+          storePathAssertion = builtins.elemAt invalidCredentialsModule.config.assertions 1;
         in
         {
           inherit package;
@@ -143,7 +167,7 @@
           formatting =
             pkgs.runCommand "buaa-login-nix-formatting"
               {
-                nativeBuildInputs = [ pkgs.nixfmt-rfc-style ];
+                nativeBuildInputs = [ pkgs.nixfmt ];
               }
               ''
                 nixfmt --check ${./flake.nix} ${./module.nix}
@@ -160,11 +184,13 @@
                 touch "$out"
               '';
 
-          module-evaluation = pkgs.runCommand "buaa-login-module-evaluation" { } ''
-            test ${pkgs.lib.escapeShellArg (toString evaluatedModule.config.services.buaa-login.package)} = \
-              ${pkgs.lib.escapeShellArg (toString package)}
-            touch "$out"
-          '';
+          module-evaluation =
+            assert !storePathAssertion.assertion;
+            pkgs.runCommand "buaa-login-module-evaluation" { } ''
+              test ${pkgs.lib.escapeShellArg (toString evaluatedModule.config.services.buaa-login.package)} = \
+                ${pkgs.lib.escapeShellArg (toString package)}
+              touch "$out"
+            '';
 
           vm-test = pkgs.testers.runNixOSTest {
             name = "buaa-login-module-test";
@@ -177,7 +203,7 @@
               services.buaa-login = {
                 enable = true;
                 package = mockPackage;
-                credentialsFile = toString credentials;
+                credentialsFile = "/run/credentials/buaa-login.json";
                 interval = "1h";
               };
 
@@ -188,7 +214,13 @@
               machine.wait_for_unit("multi-user.target")
               machine.succeed("systemctl is-enabled buaa-login.timer")
               machine.succeed("systemctl cat buaa-login.service | grep -F 'LoadCredential=buaa-login:'")
+              machine.succeed("systemctl cat buaa-login.service | grep -F 'StartLimitIntervalSec=0'")
+              machine.succeed("systemctl cat buaa-login.service | grep -F 'RestartPreventExitStatus=2 3'")
+              machine.succeed("systemctl show buaa-login.service -p RestartUSec --value | grep -Fx 30s")
               machine.succeed("systemctl show buaa-login.service -p DynamicUser --value | grep -Fx yes")
+              machine.succeed("install -d -m 0700 /run/credentials")
+              machine.succeed("printf '%s' '{\"stuid\":\"test-user\",\"paswd\":\"test-password\"}' > /run/credentials/buaa-login.json")
+              machine.succeed("chmod 0600 /run/credentials/buaa-login.json")
               machine.succeed("systemctl start buaa-login.service")
               machine.succeed("systemctl show buaa-login.service -p Result --value | grep -Fx success")
               machine.succeed("systemctl cat buaa-login-resume.service | grep -F 'ExecStop='")

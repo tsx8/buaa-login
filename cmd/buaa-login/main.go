@@ -2,9 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"io"
 	"os"
 	"regexp"
 	"runtime/debug"
@@ -18,74 +19,120 @@ var Version = "dev"
 
 var unquotedCredentialKey = regexp.MustCompile(`([,{]\s*)(stuid|paswd)\s*:`)
 
+const (
+	exitSuccess        = 0
+	exitTransient      = 1
+	exitUsage          = 2
+	exitAuthentication = 3
+)
+
+type loginRunner interface {
+	Run() (bool, map[string]interface{}, error)
+}
+
 func main() {
-	var id, pwd, credentialsFile string
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, func(id, password string) loginRunner {
+		return login.New(id, password)
+	}, time.Sleep))
+}
+
+func run(
+	args []string,
+	stdout io.Writer,
+	stderr io.Writer,
+	newClient func(string, string) loginRunner,
+	sleep func(time.Duration),
+) int {
+	fs := flag.NewFlagSet("buaa-login", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var id, password, credentialsFile string
 	var maxRetry int
-	var showVer bool
+	var showVersion bool
 
-	flag.StringVar(&id, "i", "", "Student ID")
-	flag.StringVar(&pwd, "p", "", "Password")
-	flag.StringVar(&credentialsFile, "credentials-file", "", "Path to a JSON credentials file")
-	flag.IntVar(&maxRetry, "r", 0, "Max retry times (default 0)")
-	flag.BoolVar(&showVer, "v", false, "Show version")
-	flag.Parse()
+	fs.StringVar(&id, "i", "", "Student ID")
+	fs.StringVar(&password, "p", "", "Password")
+	fs.StringVar(&credentialsFile, "credentials-file", "", "Path to a JSON credentials file")
+	fs.IntVar(&maxRetry, "r", 0, "Max retry times (default 0)")
+	fs.BoolVar(&showVersion, "v", false, "Show version")
 
-	if showVer {
-		fmt.Printf("buaa-login version: %s\n", getVersion())
-		return
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return exitSuccess
+		}
+		return exitUsage
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "unexpected positional arguments")
+		return exitUsage
+	}
+	if showVersion {
+		fmt.Fprintf(stdout, "buaa-login version: %s\n", getVersion())
+		return exitSuccess
+	}
+	if maxRetry < 0 {
+		fmt.Fprintln(stderr, "-r must be zero or greater")
+		return exitUsage
 	}
 
 	if credentialsFile != "" {
-		if id != "" || pwd != "" {
-			fmt.Fprintln(os.Stderr, "credentials-file cannot be combined with -i or -p")
-			os.Exit(2)
+		if id != "" || password != "" {
+			fmt.Fprintln(stderr, "credentials-file cannot be combined with -i or -p")
+			return exitUsage
 		}
 		var err error
-		id, pwd, err = readCredentials(credentialsFile)
+		id, password, err = readCredentials(credentialsFile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to read credentials: %v\n", err)
-			os.Exit(2)
+			fmt.Fprintf(stderr, "failed to read credentials: %v\n", err)
+			return exitUsage
 		}
 	}
 
-	if id == "" || pwd == "" {
-		flag.Usage()
-		os.Exit(1)
+	if id == "" || password == "" {
+		fs.Usage()
+		return exitUsage
 	}
 
 	id = strings.ToLower(strings.TrimSpace(id))
-	client := login.New(id, pwd)
-	totalAttempts := 1 + maxRetry
-
-	for i := range totalAttempts {
-		if i > 0 {
-			fmt.Printf("Retry attempt %d/%d after 2 seconds...\n", i, maxRetry)
-			time.Sleep(2 * time.Second)
+	client := newClient(id, password)
+	for attempt := 0; attempt <= maxRetry; attempt++ {
+		if attempt > 0 {
+			fmt.Fprintf(stderr, "Retry attempt %d/%d after 2 seconds...\n", attempt, maxRetry)
+			sleep(2 * time.Second)
 		}
 
-		success, res, err := client.Run()
-
-		if err != nil {
-			log.Printf("Attempt %d error: %v", i+1, err)
-			continue
+		success, _, err := client.Run()
+		if success && err == nil {
+			fmt.Fprintln(stdout, "Login successful!")
+			return exitSuccess
+		}
+		if err == nil {
+			err = &login.Error{
+				Kind:      login.ErrorTransient,
+				Operation: "login",
+				Message:   "gateway returned an indeterminate result",
+			}
 		}
 
-		if success {
-			printRes(res)
-			fmt.Println("Login successful!")
-			os.Exit(0)
-		}
-
-		printRes(res)
-		if errMsg, ok := res["error"].(string); ok {
-			log.Printf("Login failed: %s", errMsg)
-		} else {
-			log.Printf("Login failed (unknown error)")
+		exitCode := exitCodeForError(err)
+		fmt.Fprintf(stderr, "Attempt %d failed: %v\n", attempt+1, err)
+		if exitCode != exitTransient {
+			return exitCode
 		}
 	}
 
-	fmt.Println("All attempts failed.")
-	os.Exit(1)
+	fmt.Fprintln(stderr, "All attempts failed.")
+	return exitTransient
+}
+
+func exitCodeForError(err error) int {
+	switch login.KindOf(err) {
+	case login.ErrorAuthentication:
+		return exitAuthentication
+	case login.ErrorConfiguration:
+		return exitUsage
+	default:
+		return exitTransient
+	}
 }
 
 func readCredentials(path string) (string, string, error) {
@@ -121,13 +168,4 @@ func getVersion() string {
 	}
 
 	return Version
-}
-
-func printRes(res map[string]any) {
-	if res == nil {
-		return
-	}
-	for k, v := range res {
-		fmt.Printf("%s: %v\n", k, v)
-	}
 }

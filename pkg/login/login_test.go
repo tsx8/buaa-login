@@ -1,14 +1,23 @@
 package login
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync/atomic"
 	"testing"
 )
 
-func TestRunUsesNewPortalDiscoveryFlow(t *testing.T) {
+type failingTransport struct{}
+
+func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("forced transport failure")
+}
+
+func newPortalServer(t *testing.T, loginResponse string) (*httptest.Server, *atomic.Int32, *atomic.Int32) {
+	t.Helper()
 	var challengeRequests atomic.Int32
 	var loginRequests atomic.Int32
 
@@ -52,11 +61,16 @@ func TestRunUsesNewPortalDiscoveryFlow(t *testing.T) {
 			if query.Get("chksum") == "" || query.Get("info") == "" {
 				t.Error("login request is missing chksum or info")
 			}
-			fmt.Fprint(w, `jQuery({"error":"ok"})`)
+			fmt.Fprint(w, loginResponse)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
+	return server, &challengeRequests, &loginRequests
+}
+
+func TestRunUsesNewPortalDiscoveryFlow(t *testing.T) {
+	server, challengeRequests, loginRequests := newPortalServer(t, `jQuery({"error":"ok"})`)
 	defer server.Close()
 
 	client := New("student", "secret")
@@ -71,5 +85,119 @@ func TestRunUsesNewPortalDiscoveryFlow(t *testing.T) {
 	}
 	if challengeRequests.Load() != 1 || loginRequests.Load() != 1 {
 		t.Fatalf("request counts: challenge=%d login=%d, want 1 each", challengeRequests.Load(), loginRequests.Load())
+	}
+}
+
+func TestRunClassifiesGatewayFailures(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+		kind     ErrorKind
+		code     string
+	}{
+		{name: "expired challenge", response: `jQuery({"res":"challenge_expire_error"})`, kind: ErrorTransient, code: "challenge_expire_error"},
+		{name: "signature error", response: `jQuery({"res":"sign_error"})`, kind: ErrorTransient, code: "sign_error"},
+		{name: "wrong password", response: `jQuery({"error":"password_error"})`, kind: ErrorAuthentication, code: "password_error"},
+		{name: "unknown rejection", response: `jQuery({"error":"fail"})`, kind: ErrorAuthentication, code: "fail"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, _, _ := newPortalServer(t, test.response)
+			defer server.Close()
+
+			client := New("student", "secret")
+			client.BaseURL = server.URL
+			success, result, err := client.Run()
+			if success || result == nil || err == nil {
+				t.Fatalf("Run() = (%v, %#v, %v), want classified failure", success, result, err)
+			}
+			var classified *Error
+			if !errors.As(err, &classified) {
+				t.Fatalf("Run() error type = %T, want *Error", err)
+			}
+			if classified.Kind != test.kind || classified.Code != test.code {
+				t.Fatalf("Run() error = kind %v code %q, want kind %v code %q", classified.Kind, classified.Code, test.kind, test.code)
+			}
+		})
+	}
+}
+
+func TestNewClientVerifiesGatewayCertificate(t *testing.T) {
+	client := New("student", "secret")
+	transport, ok := client.Client.Transport.(*http.Transport)
+	if !ok || transport.TLSClientConfig == nil {
+		t.Fatal("New() transport has no TLS configuration")
+	}
+	if transport.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("New() disables TLS certificate verification")
+	}
+	if got := transport.TLSClientConfig.ServerName; got != gatewayTLSName {
+		t.Fatalf("TLS ServerName = %q, want %q", got, gatewayTLSName)
+	}
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `ac_id=78`)
+	}))
+	defer server.Close()
+	client.BaseURL = server.URL
+
+	if _, _, err := client.Run(); err == nil || KindOf(err) != ErrorTransient {
+		t.Fatalf("Run() with untrusted certificate error = %v, want transient verification failure", err)
+	}
+}
+
+func TestRunRejectsMissingCredentials(t *testing.T) {
+	_, _, err := New("", "").Run()
+	if err == nil || KindOf(err) != ErrorConfiguration {
+		t.Fatalf("Run() error = %v, want configuration error", err)
+	}
+}
+
+func TestRequestErrorsDoNotExposeQueryValues(t *testing.T) {
+	client := New("student", "secret")
+	client.Client.Transport = failingTransport{}
+
+	_, err := client.get("https://example.invalid/login", url.Values{
+		"username": {"student"},
+		"password": {"secret"},
+	})
+	if err == nil {
+		t.Fatal("get() error = nil, want transport failure")
+	}
+	if got := err.Error(); got != "forced transport failure" {
+		t.Fatalf("get() error = %q, want URL-free transport error", got)
+	}
+}
+
+func TestGatewayResultCodeRejectsUnsafeValues(t *testing.T) {
+	for _, code := range []string{"password_error\nsecret", "password error", string(make([]byte, 65))} {
+		if got := gatewayResultCode(map[string]interface{}{"error": code}); got != "unknown" {
+			t.Fatalf("gatewayResultCode(%q) = %q, want unknown", code, got)
+		}
+	}
+}
+
+func TestClassifiedErrorFormattingAndWrapping(t *testing.T) {
+	classified := &Error{
+		Kind:      ErrorAuthentication,
+		Operation: "login",
+		Code:      "password_error",
+		Message:   "rejected",
+	}
+	if got, want := classified.Error(), "login: rejected (code password_error)"; got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+	if got := KindOf(fmt.Errorf("outer: %w", classified)); got != ErrorAuthentication {
+		t.Fatalf("KindOf(wrapped error) = %v, want %v", got, ErrorAuthentication)
+	}
+
+	cause := errors.New("network unavailable")
+	transient := transientError("request challenge", cause)
+	if !errors.Is(transient, cause) {
+		t.Fatal("transient error does not unwrap to its cause")
+	}
+	if got, want := transient.Error(), "request challenge: temporary failure: network unavailable"; got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
 	}
 }
