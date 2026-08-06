@@ -88,6 +88,25 @@ func TestRunUsesNewPortalDiscoveryFlow(t *testing.T) {
 	}
 }
 
+func TestRunTreatsAlreadyOnlineResponseAsSuccess(t *testing.T) {
+	server, _, _ := newPortalServer(t, `jQuery({"error":"ok","res":"ok","suc_msg":"ip_already_online_error","ecode":0})`)
+	defer server.Close()
+
+	client := New("student", "secret")
+	client.BaseURL = server.URL
+
+	success, result, err := client.Run()
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !success {
+		t.Fatalf("Run() success = false, result = %#v", result)
+	}
+	if got := result["suc_msg"]; got != "ip_already_online_error" {
+		t.Fatalf("Run() suc_msg = %v, want ip_already_online_error", got)
+	}
+}
+
 func TestRunClassifiesGatewayFailures(t *testing.T) {
 	tests := []struct {
 		name     string
