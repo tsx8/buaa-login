@@ -1,4 +1,4 @@
-//go:build linux
+//go:build windows
 
 package login
 
@@ -7,10 +7,10 @@ import (
 	"net"
 	"testing"
 
-	"golang.org/x/sys/unix"
+	"golang.org/x/sys/windows"
 )
 
-func TestLinuxInterfaceBindingUsesLoopback(t *testing.T) {
+func TestWindowsInterfaceBindingUsesLoopback(t *testing.T) {
 	loopback := activeLoopbackInterface(t)
 	control, err := newInterfaceControl(loopback.Name)
 	if err != nil {
@@ -30,17 +30,21 @@ func TestLinuxInterfaceBindingUsesLoopback(t *testing.T) {
 		t.Fatalf("socket control error = %v", err)
 	}
 
-	var boundName string
+	var boundIndex int
 	var readErr error
 	if err := rawConn.Control(func(fd uintptr) {
-		boundName, readErr = unix.GetsockoptString(int(fd), unix.SOL_SOCKET, unix.SO_BINDTODEVICE)
+		boundIndex, readErr = windows.GetsockoptInt(
+			windows.Handle(fd),
+			windows.IPPROTO_IP,
+			ipUnicastInterface,
+		)
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if boundName != loopback.Name {
-		t.Fatalf("SO_BINDTODEVICE = %q, want %q", boundName, loopback.Name)
+	if boundIndex != loopback.Index {
+		t.Fatalf("IP_UNICAST_IF = %d, want %d", boundIndex, loopback.Index)
 	}
 }

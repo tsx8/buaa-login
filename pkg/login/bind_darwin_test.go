@@ -1,4 +1,4 @@
-//go:build linux
+//go:build darwin
 
 package login
 
@@ -10,7 +10,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func TestLinuxInterfaceBindingUsesLoopback(t *testing.T) {
+func TestDarwinInterfaceBindingUsesLoopback(t *testing.T) {
 	loopback := activeLoopbackInterface(t)
 	control, err := newInterfaceControl(loopback.Name)
 	if err != nil {
@@ -30,17 +30,17 @@ func TestLinuxInterfaceBindingUsesLoopback(t *testing.T) {
 		t.Fatalf("socket control error = %v", err)
 	}
 
-	var boundName string
+	var boundIndex int
 	var readErr error
 	if err := rawConn.Control(func(fd uintptr) {
-		boundName, readErr = unix.GetsockoptString(int(fd), unix.SOL_SOCKET, unix.SO_BINDTODEVICE)
+		boundIndex, readErr = unix.GetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_BOUND_IF)
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if boundName != loopback.Name {
-		t.Fatalf("SO_BINDTODEVICE = %q, want %q", boundName, loopback.Name)
+	if boundIndex != loopback.Index {
+		t.Fatalf("IP_BOUND_IF = %d, want %d", boundIndex, loopback.Index)
 	}
 }

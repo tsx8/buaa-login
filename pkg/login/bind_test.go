@@ -7,6 +7,21 @@ import (
 	"testing"
 )
 
+func activeLoopbackInterface(t *testing.T) *net.Interface {
+	t.Helper()
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range interfaces {
+		if interfaces[i].Flags&net.FlagLoopback != 0 && interfaces[i].Flags&net.FlagUp != 0 {
+			return &interfaces[i]
+		}
+	}
+	t.Fatal("no active loopback interface found")
+	return nil
+}
+
 func TestNewRejectsUnknownInterface(t *testing.T) {
 	_, err := New(Config{
 		StudentID: "student",
