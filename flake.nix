@@ -40,7 +40,7 @@
             pname = "buaa-login";
             inherit version;
             src = source;
-            vendorHash = "sha256-Np+MQ+oy8nyCBIT1ivJyt0sRpxgGkwGs8M9Je4oLt1I=";
+            vendorHash = "sha256-kPBpf41hpkA0d6Zp6ZGnXfHg6ndlsP2qHxdur8Fp5MI=";
             subPackages = [ "cmd/buaa-login" ];
             checkPhase = ''
               runHook preCheck
