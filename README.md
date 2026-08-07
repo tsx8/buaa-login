@@ -9,7 +9,7 @@
 
 ## ✨ 功能特性
 
-*   **跨平台支持**：支持 Windows, Linux (amd64/arm64), macOS。
+*   **跨平台支持**：支持 Windows amd64、Linux amd64/arm64 和 Apple Silicon macOS。
 *   **可配置重试**：支持通过 `-r` 参数自定义重试次数，内置 2 秒重试间隔。
 *   **SRun 算法支持**：完整实现了校园网认证所需的复杂加密算法（HMAC-MD5, SHA1, 自定义 Base64, XEncode/TEA）。
 *   **NixOS 友好**：提供 Flake 和 NixOS Module，支持开机自动登录、定时检查和唤醒后自动登录。
@@ -28,6 +28,9 @@
 # 登录并在失败时重试 3 次
 ./buaa-login -i <学号> -p <密码> -r 3
 
+# 从 JSON 凭据文件读取，避免密码出现在进程参数中
+./buaa-login --credentials-file /run/secrets/buaa-login.json
+
 # 显示版本
 ./buaa-login -v
 ```
@@ -37,14 +40,19 @@
 |------|------|--------|
 | `-i` | 学号 | 必填 |
 | `-p` | 密码 | 必填 |
+| `--credentials-file` | JSON 凭据文件；不能与 `-i`、`-p` 同时使用 | - |
 | `-r` | 最大重试次数 | 0 |
 | `-v` | 显示版本号 | - |
+
+`-i`/`-p` 适合交互测试，但密码会进入 shell 历史和进程参数。自动运行时应使用权限受限、位于 Nix Store 之外的凭据文件。
+
+退出码可用于服务管理：`0` 表示成功，`1` 表示可重试的网络或网关临时故障，`2` 表示命令行或凭据文件配置错误，`3` 表示认证被拒绝。程序只对退出码 `1` 对应的故障执行 `-r` 重试。
 
 **示例：**
 ```bash
 ./buaa-login -i 23371234 -p MySecretPass
 ```
-如果登录成功，程序会输出 `Login successful!` 并显示账户信息；如果失败，程序会自动重试。
+如果登录成功，程序会输出 `Login successful!`；如果发生临时故障，程序会按 `-r` 指定的次数重试。
 
 ### 2. 安装方式
 
@@ -73,7 +81,10 @@ nix run github:tsx8/buaa-login -- -i <学号> -p <密码>
 ```nix
 inputs = {
   nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  buaa-login.url = "github:tsx8/buaa-login"; # 添加这一行
+  buaa-login = {
+    url = "github:tsx8/buaa-login";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
 };
 ```
 
@@ -88,21 +99,25 @@ inputs = {
 
   services.buaa-login = {
     enable = true;
-    # 凭据文件路径，文件内容格式为：<学号> <空格> <密码>
-    # 例如: 23371234 MyPassword
-    configFile = "/etc/nixos/buaa-cred.txt"; 
+    credentialsFile = "/run/secrets/buaa-login.json";
   };
 }
 ```
+
+凭据文件必须位于 Nix Store 之外，并使用以下 JSON 结构：
+
+```json
+{"stuid":"23371234","paswd":"MyPassword"}
+```
+
+建议由 sops-nix、agenix 或其他运行时密钥管理工具生成该文件。模块通过 systemd credentials 将文件传给程序。
 
 ### 3. 配置选项
 
 | 选项 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `enable` | bool | `false` | 是否启用服务 |
-| `configFile` | path | `null` | 凭据文件路径（格式：`<学号> <密码>`） |
-| `stuid` | string | `null` | 学号（与 `stupwd` 配合使用） |
-| `stupwd` | string | `null` | 密码（与 `stuid` 配合使用） |
+| `credentialsFile` | string | 必填 | Nix Store 外的绝对 JSON 凭据文件路径 |
 | `retry` | int | `3` | 登录失败最大重试次数 |
 | `interval` | string | `null` | 定时检查间隔（如 `"15min"`、`"1h"`），设置后启用定时器模式 |
 | `wakeUp` | bool | `true` | 从睡眠/挂起唤醒后自动执行登录检查 |
@@ -113,19 +128,7 @@ inputs = {
 ```nix
 services.buaa-login = {
   enable = true;
-  configFile = "/etc/nixos/buaa-cred.txt"; 
-};
-```
-
-#### 直接配置账号密码
-
-*⚠️ 警告：这将导致密码明文存储在世界可读的 Nix Store 中。*
-
-```nix
-services.buaa-login = {
-  enable = true;
-  stuid = "23371234";
-  stupwd = "MyPassword";
+  credentialsFile = "/run/secrets/buaa-login.json";
 };
 ```
 
@@ -133,7 +136,7 @@ services.buaa-login = {
 ```nix
 services.buaa-login = {
   enable = true;
-  configFile = "/etc/nixos/buaa-cred.txt";
+  credentialsFile = "/run/secrets/buaa-login.json";
   interval = "15min";  # 每 15 分钟检查一次
   retry = 5;           # 失败时重试 5 次
 };
@@ -143,13 +146,13 @@ services.buaa-login = {
 ```nix
 services.buaa-login = {
   enable = true;
-  configFile = "/etc/nixos/buaa-cred.txt";
+  credentialsFile = "/run/secrets/buaa-login.json";
   wakeUp = false;
 };
 ```
 
 ### 服务说明
-- **默认模式**（`interval = null`）：服务在 `network-online.target` 达成后自动尝试登录，失败时自动重启服务（5 秒间隔，60 秒内最多 5 次）。
+- **默认模式**（`interval = null`）：服务在 `network-online.target` 达成后自动尝试登录；网络或网关临时故障会每 30 秒持续重试，配置错误和认证被拒绝不会重启服务。
 - **定时器模式**（设置 `interval`）：通过 systemd timer 定期触发登录检查，适合网络不稳定的环境。
 - **唤醒触发**：默认在从睡眠/挂起唤醒后自动执行登录检查。
 

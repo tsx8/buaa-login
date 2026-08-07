@@ -3,3 +3,4 @@ release_files/
 *.exe
 *.o
 vendor/
+DONOTCOMMIT.json

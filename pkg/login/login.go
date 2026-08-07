@@ -1,21 +1,25 @@
 package login
 
 import (
-	"context"
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/tsx8/buaa-login/pkg/srun"
+)
+
+const (
+	defaultGatewayURL = "https://10.200.21.4"
+	gatewayTLSName    = "gw.buaa.edu.cn"
 )
 
 type Client struct {
@@ -24,89 +28,87 @@ type Client struct {
 	BaseURL string
 	Client  *http.Client
 	Header  http.Header
-	Iface   string
 }
 
-func New(id, pwd string, iface string) *Client {
+func New(id, pwd string) *Client {
 	jar, _ := cookiejar.New(nil)
-
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-
-	if iface != "" {
-		ifaceObj, err := net.InterfaceByName(iface)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: interface %s not found: %v\n", iface, err)
-		} else {
-			transport.DialContext = createDialContext(iface, ifaceObj)
-		}
-	}
-
-	client := &http.Client{
-		Timeout:   10 * time.Second,
-		Jar:       jar,
-		Transport: transport,
-	}
-
 	return &Client{
 		ID:      id,
 		Pwd:     pwd,
-		BaseURL: "https://gw.buaa.edu.cn",
-		Client:  client,
+		BaseURL: defaultGatewayURL,
+		Client: &http.Client{
+			Timeout: 10 * time.Second,
+			Jar:     jar,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					MinVersion: tls.VersionTLS12,
+					ServerName: gatewayTLSName,
+				},
+			},
+		},
 		Header: http.Header{
 			"User-Agent": []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0"},
 		},
-		Iface: iface,
 	}
-}
-
-func createDialContext(ifaceName string, iface *net.Interface) func(context.Context, string, string) (net.Conn, error) {
-	dialer := &net.Dialer{
-		Timeout: 10 * time.Second,
-	}
-
-	addrs, err := iface.Addrs()
-	if err == nil && len(addrs) > 0 {
-		for _, a := range addrs {
-			if ipNet, ok := a.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
-				if ipNet.IP.To4() != nil {
-					dialer.LocalAddr = &net.TCPAddr{IP: ipNet.IP}
-					break
-				}
-			}
-		}
-	}
-
-	dialer.Control = createControlFunc(ifaceName)
-
-	return dialer.DialContext
-}
-
-type Config struct {
-	Acid   string `json:"acid"`
-	IP     string `json:"ip"`
-	Portal struct {
-		AuthIP string `json:"AuthIP"`
-	} `json:"portal"`
 }
 
 func (c *Client) Run() (bool, map[string]interface{}, error) {
 	if c.ID == "" || c.Pwd == "" {
-		return false, nil, errors.New("id or password missing")
+		return false, nil, &Error{
+			Kind:      ErrorConfiguration,
+			Operation: "validate credentials",
+			Message:   "student ID and password must both be non-empty",
+		}
 	}
 
-	config, err := c.getConfig()
+	baseURL := strings.TrimRight(c.BaseURL, "/")
+	bodyInit, err := c.get(baseURL, nil)
 	if err != nil {
-		return false, nil, fmt.Errorf("failed to get config: %v", err)
+		return false, nil, transientError("initialize gateway session", err)
 	}
 
-	ip := config.IP
-	acid := config.Acid
+	acidRegex := regexp.MustCompile(`ac_id=(\d+)`)
+	acidMatch := acidRegex.FindSubmatch(bodyInit)
+	if len(acidMatch) < 2 {
+		return false, nil, transientError("discover gateway access controller", errors.New("ac_id is missing"))
+	}
+	acid := string(acidMatch[1])
 
-	token, err := c.getToken(c.ID, ip)
+	portalParams := url.Values{}
+	portalParams.Set("ac_id", acid)
+	portalParams.Set("theme", "buaa")
+	bodyPortal, err := c.get(baseURL+"/srun_portal_pc", portalParams)
 	if err != nil {
-		return false, nil, fmt.Errorf("get token failed: %v", err)
+		return false, nil, transientError("load gateway portal", err)
+	}
+
+	ipRegex := regexp.MustCompile(`ip\s*:\s*["']([^"']+)["']`)
+	ipMatch := ipRegex.FindSubmatch(bodyPortal)
+	if len(ipMatch) < 2 {
+		return false, nil, transientError("discover client address", errors.New("IP address is missing"))
+	}
+	ip := string(ipMatch[1])
+
+	timestamp := fmt.Sprintf("%d", time.Now().UnixMilli())
+
+	params := url.Values{}
+	params.Set("callback", "jQuery")
+	params.Set("username", c.ID)
+	params.Set("ip", ip)
+	params.Set("_", timestamp)
+
+	bodyChal, err := c.get(baseURL+"/cgi-bin/get_challenge", params)
+	if err != nil {
+		return false, nil, transientError("request login challenge", err)
+	}
+
+	challenge, err := parseJSONP(bodyChal)
+	if err != nil {
+		return false, nil, transientError("parse login challenge", err)
+	}
+	token, ok := challenge["challenge"].(string)
+	if !ok || token == "" {
+		return false, nil, transientError("parse login challenge", errors.New("challenge token is missing"))
 	}
 
 	infoData := map[string]string{
@@ -141,114 +143,108 @@ func (c *Client) Run() (bool, map[string]interface{}, error) {
 	loginParams.Set("double_stack", "0")
 	loginParams.Set("_", fmt.Sprintf("%d", time.Now().UnixMilli()))
 
-	reqLogin, _ := http.NewRequest("GET", c.BaseURL+"/cgi-bin/srun_portal", nil)
-	reqLogin.URL.RawQuery = loginParams.Encode()
-	reqLogin.Header = c.Header
-
-	respLogin, err := c.Client.Do(reqLogin)
+	bodyLogin, err := c.get(baseURL+"/cgi-bin/srun_portal", loginParams)
 	if err != nil {
-		return false, nil, fmt.Errorf("login request failed: %v", err)
-	}
-	defer respLogin.Body.Close()
-	bodyLogin, _ := io.ReadAll(respLogin.Body)
-
-	jsonRegex := regexp.MustCompile(`\(\{.*\}\)`)
-	jsonPart := jsonRegex.Find(bodyLogin)
-	if len(jsonPart) < 2 {
-		return false, nil, fmt.Errorf("invalid login response: %s", string(bodyLogin))
-	}
-	jsonClean := jsonPart[1 : len(jsonPart)-1]
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(jsonClean, &result); err != nil {
-		return false, nil, err
+		return false, nil, transientError("submit login request", err)
 	}
 
-	errorCode, ok := result["error"].(string)
-	if ok && errorCode == "ok" {
+	result, err := parseJSONP(bodyLogin)
+	if err != nil {
+		return false, nil, transientError("parse login response", err)
+	}
+
+	if result["error"] == "ok" || result["res"] == "ok" {
 		return true, result, nil
 	}
 
-	if errorCode == "sign_error" || errorCode == "challenge_expire_error" {
-		return false, result, nil
+	resCode := gatewayResultCode(result)
+	if resCode == "sign_error" || resCode == "challenge_expire_error" {
+		return false, result, &Error{
+			Kind:      ErrorTransient,
+			Operation: "submit login request",
+			Code:      resCode,
+			Message:   "gateway challenge expired",
+		}
 	}
 
-	return false, result, errors.New("login returned non-ok status")
+	return false, result, &Error{
+		Kind:      ErrorAuthentication,
+		Operation: "submit login request",
+		Code:      resCode,
+		Message:   "gateway rejected the login",
+	}
 }
 
-func (c *Client) getConfig() (*Config, error) {
-	portalURL := c.BaseURL + "/srun_portal_pc?ac_id=1&theme=buaa"
-	resp, err := c.Client.Get(portalURL)
+func transientError(operation string, err error) error {
+	return &Error{
+		Kind:      ErrorTransient,
+		Operation: operation,
+		Message:   "temporary failure",
+		Err:       err,
+	}
+}
+
+func gatewayResultCode(result map[string]interface{}) string {
+	for _, key := range []string{"error", "res"} {
+		if value, ok := result[key].(string); ok && value != "" && value != "ok" {
+			return safeGatewayCode(value)
+		}
+	}
+	return "unknown"
+}
+
+func safeGatewayCode(code string) string {
+	if len(code) > 64 {
+		return "unknown"
+	}
+	for _, char := range code {
+		if (char < 'a' || char > 'z') &&
+			(char < 'A' || char > 'Z') &&
+			(char < '0' || char > '9') &&
+			char != '_' && char != '-' && char != '.' {
+			return "unknown"
+		}
+	}
+	return code
+}
+
+func (c *Client) get(rawURL string, params url.Values) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+	if params != nil {
+		req.URL.RawQuery = params.Encode()
 	}
-
-	bodyStr := string(body)
-
-	config := &Config{
-		Acid: "1",
-	}
-
-	acidRegex := regexp.MustCompile(`acid\s*:\s*"([^"]+)"`)
-	acidMatch := acidRegex.FindSubmatch([]byte(bodyStr))
-	if len(acidMatch) >= 2 {
-		config.Acid = string(acidMatch[1])
-	}
-
-	ipRegex := regexp.MustCompile(`ip\s*:\s*"([^"]+)"`)
-	ipMatch := ipRegex.FindSubmatch([]byte(bodyStr))
-	if len(ipMatch) >= 2 {
-		config.IP = string(ipMatch[1])
-	}
-
-	authIPRegex := regexp.MustCompile(`"AuthIP"\s*:\s*"([^"]+)"`)
-	authIPMatch := authIPRegex.FindSubmatch([]byte(bodyStr))
-	if len(authIPMatch) >= 2 {
-		config.Portal.AuthIP = string(authIPMatch[1])
-	}
-
-	if config.IP == "" {
-		return nil, errors.New("failed to get IP from config")
-	}
-
-	return config, nil
-}
-
-func (c *Client) getToken(username, ip string) (string, error) {
-	timestamp := fmt.Sprintf("%d", time.Now().UnixMilli())
-
-	params := url.Values{}
-	params.Set("callback", "jQuery")
-	params.Set("username", username)
-	params.Set("ip", ip)
-	params.Set("_", timestamp)
-
-	req, _ := http.NewRequest("GET", c.BaseURL+"/cgi-bin/get_challenge", nil)
-	req.URL.RawQuery = params.Encode()
-	req.Header = c.Header
+	req.Header = c.Header.Clone()
 
 	resp, err := c.Client.Do(req)
 	if err != nil {
-		return "", err
+		var requestError *url.Error
+		if errors.As(err, &requestError) {
+			err = requestError.Err
+		}
+		return nil, err
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("unexpected HTTP status %s", resp.Status)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+func parseJSONP(body []byte) (map[string]interface{}, error) {
+	body = bytes.TrimSpace(body)
+	open := bytes.IndexByte(body, '(')
+	close := bytes.LastIndexByte(body, ')')
+	if open < 0 || close <= open {
+		return nil, errors.New("missing JSONP wrapper")
 	}
 
-	tokenRegex := regexp.MustCompile(`"challenge"\s*:\s*"([^"]+)"`)
-	tokenMatch := tokenRegex.FindSubmatch(body)
-	if len(tokenMatch) < 2 {
-		return "", fmt.Errorf("failed to get challenge token from response: %s", string(body))
+	var result map[string]interface{}
+	if err := json.Unmarshal(body[open+1:close], &result); err != nil {
+		return nil, err
 	}
-
-	return string(tokenMatch[1]), nil
+	return result, nil
 }
