@@ -105,6 +105,7 @@ inputs = {
   services.buaa-login = {
     enable = true;
     credentialsFile = "/run/secrets/buaa-login.json";
+    interface = "wlan0";
   };
 }
 ```
@@ -123,6 +124,7 @@ inputs = {
 |------|------|--------|------|
 | `enable` | bool | `false` | 是否启用服务 |
 | `credentialsFile` | string | 必填 | Nix Store 外的绝对 JSON 凭据文件路径 |
+| `interface` | string or null | `null` | Linux 上用于网关请求的网络接口；绑定失败时不回退 |
 | `retry` | int | `3` | 登录失败最大重试次数 |
 | `interval` | string | `null` | 定时检查间隔（如 `"15min"`、`"1h"`），设置后启用定时器模式 |
 | `wakeUp` | bool | `true` | 从睡眠/挂起唤醒后自动执行登录检查 |

@@ -107,10 +107,12 @@
             name = "buaa-login";
             runtimeInputs = [ pkgs.jq ];
             text = ''
-              test "$#" -eq 4
+              test "$#" -eq 6
               test "$1" = "--credentials-file"
               test "$3" = "-r"
               test "$4" = "3"
+              test "$5" = "--interface"
+              test "$6" = "eth0"
               test "$(jq -r .stuid "$2")" = "test-user"
               test "$(jq -r .paswd "$2")" = "test-password"
             '';
@@ -205,6 +207,7 @@
                 enable = true;
                 package = mockPackage;
                 credentialsFile = "/run/credentials/buaa-login.json";
+                interface = "eth0";
                 interval = "1h";
               };
 
