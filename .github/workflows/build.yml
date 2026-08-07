@@ -1,0 +1,110 @@
+name: Cross-platform Build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version string embedded in each binary
+        required: true
+        type: string
+      release:
+        description: Whether artifacts are being prepared for a release
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - asset: buaa-login-linux-amd64
+            goos: linux
+            goarch: amd64
+            archive: tar.gz
+            suffix: ""
+          - asset: buaa-login-linux-arm64
+            goos: linux
+            goarch: arm64
+            archive: tar.gz
+            suffix: ""
+          - asset: buaa-login-linux-armv7
+            goos: linux
+            goarch: arm
+            goarm: "7"
+            archive: tar.gz
+            suffix: ""
+          - asset: buaa-login-linux-386
+            goos: linux
+            goarch: "386"
+            archive: tar.gz
+            suffix: ""
+          - asset: buaa-login-linux-mipsle-softfloat
+            goos: linux
+            goarch: mipsle
+            gomips: softfloat
+            archive: tar.gz
+            suffix: ""
+          - asset: buaa-login-windows-amd64
+            goos: windows
+            goarch: amd64
+            archive: zip
+            suffix: .exe
+          - asset: buaa-login-windows-arm64
+            goos: windows
+            goarch: arm64
+            archive: zip
+            suffix: .exe
+          - asset: buaa-login-darwin-arm64
+            goos: darwin
+            goarch: arm64
+            archive: tar.gz
+            suffix: ""
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build and package
+        shell: bash
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          GOMIPS: ${{ matrix.gomips }}
+          VERSION: ${{ inputs.version }}
+          ASSET: ${{ matrix.asset }}
+          ARCHIVE: ${{ matrix.archive }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          set -euo pipefail
+          binary="buaa-login${SUFFIX}"
+          mkdir -p build dist
+          go build -ldflags "-s -w -X main.Version=${VERSION}" \
+            -o "build/${binary}" \
+            ./cmd/buaa-login
+
+          if [[ "${ARCHIVE}" == "zip" ]]; then
+            (cd build && zip "../dist/${ASSET}.zip" "${binary}")
+          else
+            tar -C build -czf "dist/${ASSET}.tar.gz" "${binary}"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/*
+          retention-days: ${{ inputs.release && 1 || 3 }}

@@ -161,6 +161,7 @@
               }
               ''
                 actionlint \
+                  ${./.github/workflows/build.yml} \
                   ${./.github/workflows/ci.yml} \
                   ${./.github/workflows/nix.yml} \
                   ${./.github/workflows/publish.yml}

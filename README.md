@@ -9,7 +9,7 @@
 
 ## ✨ 功能特性
 
-*   **跨平台支持**：支持 Windows amd64、Linux amd64/arm64 和 Apple Silicon macOS。
+*   **跨平台支持**：发布 Windows amd64/arm64、Linux amd64/arm64/armv7/386/mipsle-softfloat 和 Apple Silicon macOS 构建。
 *   **可配置重试**：支持通过 `-r` 参数自定义重试次数，内置 2 秒重试间隔。
 *   **指定网络接口**：Windows、Linux 和 Apple Silicon macOS 可通过 `--interface` 将网关请求严格绑定到指定接口。
 *   **SRun 算法支持**：完整实现了校园网认证所需的复杂加密算法（HMAC-MD5, SHA1, 自定义 Base64, XEncode/TEA）。
