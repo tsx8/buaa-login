@@ -27,12 +27,14 @@ const (
 )
 
 type loginRunner interface {
-	Run() (bool, map[string]interface{}, error)
+	Run() error
 }
 
+type clientFactory func(login.Config) (loginRunner, error)
+
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, func(id, password string) loginRunner {
-		return login.New(id, password)
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, func(config login.Config) (loginRunner, error) {
+		return login.New(config)
 	}, time.Sleep))
 }
 
@@ -40,18 +42,19 @@ func run(
 	args []string,
 	stdout io.Writer,
 	stderr io.Writer,
-	newClient func(string, string) loginRunner,
+	newClient clientFactory,
 	sleep func(time.Duration),
 ) int {
 	fs := flag.NewFlagSet("buaa-login", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	var id, password, credentialsFile string
+	var id, password, credentialsFile, interfaceName string
 	var maxRetry int
 	var showVersion bool
 
 	fs.StringVar(&id, "i", "", "Student ID")
 	fs.StringVar(&password, "p", "", "Password")
 	fs.StringVar(&credentialsFile, "credentials-file", "", "Path to a JSON credentials file")
+	fs.StringVar(&interfaceName, "interface", "", "Network interface used for gateway requests")
 	fs.IntVar(&maxRetry, "r", 0, "Max retry times (default 0)")
 	fs.BoolVar(&showVersion, "v", false, "Show version")
 
@@ -93,24 +96,25 @@ func run(
 	}
 
 	id = strings.ToLower(strings.TrimSpace(id))
-	client := newClient(id, password)
+	client, err := newClient(login.Config{
+		StudentID: id,
+		Password:  password,
+		Interface: interfaceName,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "Failed to configure login: %v\n", err)
+		return exitCodeForError(err)
+	}
 	for attempt := 0; attempt <= maxRetry; attempt++ {
 		if attempt > 0 {
 			fmt.Fprintf(stderr, "Retry attempt %d/%d after 2 seconds...\n", attempt, maxRetry)
 			sleep(2 * time.Second)
 		}
 
-		success, _, err := client.Run()
-		if success && err == nil {
+		err := client.Run()
+		if err == nil {
 			fmt.Fprintln(stdout, "Login successful!")
 			return exitSuccess
-		}
-		if err == nil {
-			err = &login.Error{
-				Kind:      login.ErrorTransient,
-				Operation: "login",
-				Message:   "gateway returned an indeterminate result",
-			}
 		}
 
 		exitCode := exitCodeForError(err)

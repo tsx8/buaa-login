@@ -31,6 +31,7 @@
               ./cmd
               ./pkg
               ./go.mod
+              ./go.sum
             ];
           };
         in
@@ -39,7 +40,7 @@
             pname = "buaa-login";
             inherit version;
             src = source;
-            vendorHash = null;
+            vendorHash = "sha256-Np+MQ+oy8nyCBIT1ivJyt0sRpxgGkwGs8M9Je4oLt1I=";
             subPackages = [ "cmd/buaa-login" ];
             checkPhase = ''
               runHook preCheck

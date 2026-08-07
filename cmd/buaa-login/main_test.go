@@ -15,9 +15,9 @@ type stubLoginRunner struct {
 	calls int
 }
 
-func (s *stubLoginRunner) Run() (bool, map[string]interface{}, error) {
+func (s *stubLoginRunner) Run() error {
 	s.calls++
-	return s.err == nil, nil, s.err
+	return s.err
 }
 
 func TestReadCredentials(t *testing.T) {
@@ -92,15 +92,15 @@ func TestRunReturnsStableExitCodes(t *testing.T) {
 			runner := &stubLoginRunner{err: test.err}
 			var stdout, stderr bytes.Buffer
 			sleeps := 0
-			args := []string{"-i", "Student", "-p", "not-logged"}
+			args := []string{"-i", "Student", "-p", "not-logged", "--interface", "campus0"}
 			if test.maxRetry != "" {
 				args = append(args, "-r", test.maxRetry)
 			}
-			code := run(args, &stdout, &stderr, func(id, password string) loginRunner {
-				if id != "student" || password != "not-logged" {
-					t.Fatalf("client credentials = (%q, %q), want normalized ID and original password", id, password)
+			code := run(args, &stdout, &stderr, func(config login.Config) (loginRunner, error) {
+				if config.StudentID != "student" || config.Password != "not-logged" || config.Interface != "campus0" {
+					t.Fatalf("client config = %#v, want normalized credentials and campus0", config)
 				}
-				return runner
+				return runner, nil
 			}, func(time.Duration) { sleeps++ })
 
 			if code != test.wantCode || runner.calls != test.wantCalls || sleeps != test.wantSleeps {
@@ -120,12 +120,39 @@ func TestRunRejectsInvalidCLIConfiguration(t *testing.T) {
 		{"-i", "student", "-p", "secret", "unexpected"},
 	} {
 		var stdout, stderr bytes.Buffer
-		code := run(args, &stdout, &stderr, func(string, string) loginRunner {
+		code := run(args, &stdout, &stderr, func(login.Config) (loginRunner, error) {
 			t.Fatal("client must not be created for invalid CLI configuration")
-			return nil
+			return nil, nil
 		}, func(time.Duration) {})
 		if code != exitUsage {
 			t.Fatalf("run(%q) = %d, want %d", args, code, exitUsage)
 		}
+	}
+}
+
+func TestRunReturnsFactoryErrorWithoutRetry(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	factoryCalls := 0
+	sleeps := 0
+	code := run(
+		[]string{"-i", "student", "-p", "not-logged", "--interface", "missing0", "-r", "3"},
+		&stdout,
+		&stderr,
+		func(config login.Config) (loginRunner, error) {
+			factoryCalls++
+			if config.Interface != "missing0" {
+				t.Fatalf("interface = %q, want missing0", config.Interface)
+			}
+			return nil, &login.Error{
+				Kind:      login.ErrorConfiguration,
+				Operation: "resolve network interface",
+				Message:   "interface does not exist",
+			}
+		},
+		func(time.Duration) { sleeps++ },
+	)
+
+	if code != exitUsage || factoryCalls != 1 || sleeps != 0 {
+		t.Fatalf("run() = code %d, factory calls %d, sleeps %d; want %d, 1, 0", code, factoryCalls, sleeps, exitUsage)
 	}
 }
