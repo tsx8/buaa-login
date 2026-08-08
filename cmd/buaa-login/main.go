@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tsx8/buaa-login/pkg/login"
+	"github.com/tsx8/buaa-login/v2/pkg/login"
 )
 
 var Version = "dev"

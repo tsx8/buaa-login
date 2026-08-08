@@ -66,7 +66,7 @@
 
 #### 方式 B：使用 Go 安装
 ```bash
-go install github.com/tsx8/buaa-login/cmd/buaa-login@latest
+go install github.com/tsx8/buaa-login/v2/cmd/buaa-login@latest
 ```
 
 #### 方式 C：Nix Run (临时运行)

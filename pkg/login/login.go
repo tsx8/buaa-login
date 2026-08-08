@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tsx8/buaa-login/pkg/srun"
+	"github.com/tsx8/buaa-login/v2/pkg/srun"
 )
 
 const (
