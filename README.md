@@ -9,8 +9,9 @@
 
 ## ✨ 功能特性
 
-*   **跨平台支持**：支持 Windows amd64、Linux amd64/arm64 和 Apple Silicon macOS。
+*   **跨平台支持**：发布 Windows amd64/arm64、Linux amd64/arm64/armv7/386/mipsle-softfloat 和 Apple Silicon macOS 构建。
 *   **可配置重试**：支持通过 `-r` 参数自定义重试次数，内置 2 秒重试间隔。
+*   **指定网络接口**：Windows、Linux 和 Apple Silicon macOS 可通过 `--interface` 将网关请求严格绑定到指定接口。
 *   **SRun 算法支持**：完整实现了校园网认证所需的复杂加密算法（HMAC-MD5, SHA1, 自定义 Base64, XEncode/TEA）。
 *   **NixOS 友好**：提供 Flake 和 NixOS Module，支持开机自动登录、定时检查和唤醒后自动登录。
 *   **稳定可靠**：10 秒超时设置，Cookie 持久化，完善的错误处理。
@@ -31,6 +32,9 @@
 # 从 JSON 凭据文件读取，避免密码出现在进程参数中
 ./buaa-login --credentials-file /run/secrets/buaa-login.json
 
+# 通过指定网络接口登录
+./buaa-login --credentials-file /run/secrets/buaa-login.json --interface wlan0
+
 # 显示版本
 ./buaa-login -v
 ```
@@ -41,6 +45,7 @@
 | `-i` | 学号 | 必填 |
 | `-p` | 密码 | 必填 |
 | `--credentials-file` | JSON 凭据文件；不能与 `-i`、`-p` 同时使用 | - |
+| `--interface` | 用于网关请求的网络接口；绑定失败时不回退 | - |
 | `-r` | 最大重试次数 | 0 |
 | `-v` | 显示版本号 | - |
 
@@ -100,6 +105,7 @@ inputs = {
   services.buaa-login = {
     enable = true;
     credentialsFile = "/run/secrets/buaa-login.json";
+    interface = "wlan0";
   };
 }
 ```
@@ -118,6 +124,7 @@ inputs = {
 |------|------|--------|------|
 | `enable` | bool | `false` | 是否启用服务 |
 | `credentialsFile` | string | 必填 | Nix Store 外的绝对 JSON 凭据文件路径 |
+| `interface` | string or null | `null` | 用于网关请求的网络接口；绑定失败时不回退 |
 | `retry` | int | `3` | 登录失败最大重试次数 |
 | `interval` | string | `null` | 定时检查间隔（如 `"15min"`、`"1h"`），设置后启用定时器模式 |
 | `wakeUp` | bool | `true` | 从睡眠/挂起唤醒后自动执行登录检查 |

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -22,55 +23,83 @@ const (
 	gatewayTLSName    = "gw.buaa.edu.cn"
 )
 
+// Config contains the credentials and optional outbound interface for a login client.
+type Config struct {
+	StudentID string
+	Password  string
+	Interface string
+}
+
 type Client struct {
-	ID      string
-	Pwd     string
-	BaseURL string
-	Client  *http.Client
-	Header  http.Header
+	id         string
+	pwd        string
+	baseURL    string
+	httpClient *http.Client
+	header     http.Header
 }
 
-func New(id, pwd string) *Client {
-	jar, _ := cookiejar.New(nil)
-	return &Client{
-		ID:      id,
-		Pwd:     pwd,
-		BaseURL: defaultGatewayURL,
-		Client: &http.Client{
-			Timeout: 10 * time.Second,
-			Jar:     jar,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{
-					MinVersion: tls.VersionTLS12,
-					ServerName: gatewayTLSName,
-				},
-			},
-		},
-		Header: http.Header{
-			"User-Agent": []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0"},
-		},
-	}
-}
-
-func (c *Client) Run() (bool, map[string]interface{}, error) {
-	if c.ID == "" || c.Pwd == "" {
-		return false, nil, &Error{
+// New validates config and constructs a client whose requests use one transport.
+func New(config Config) (*Client, error) {
+	if config.StudentID == "" || config.Password == "" {
+		return nil, &Error{
 			Kind:      ErrorConfiguration,
 			Operation: "validate credentials",
 			Message:   "student ID and password must both be non-empty",
 		}
 	}
 
-	baseURL := strings.TrimRight(c.BaseURL, "/")
+	dialer := &net.Dialer{}
+	if config.Interface != "" {
+		control, err := newInterfaceControl(config.Interface)
+		if err != nil {
+			return nil, err
+		}
+		dialer.ControlContext = control
+	}
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, &Error{
+			Kind:      ErrorConfiguration,
+			Operation: "create cookie jar",
+			Message:   "unable to initialize login client",
+			Err:       err,
+		}
+	}
+
+	return &Client{
+		id:      config.StudentID,
+		pwd:     config.Password,
+		baseURL: defaultGatewayURL,
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+			Jar:     jar,
+			Transport: &http.Transport{
+				DialContext: dialer.DialContext,
+				TLSClientConfig: &tls.Config{
+					MinVersion: tls.VersionTLS12,
+					ServerName: gatewayTLSName,
+				},
+			},
+		},
+		header: http.Header{
+			"User-Agent": []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0"},
+		},
+	}, nil
+}
+
+// Run performs one login attempt. An already-online response is successful.
+func (c *Client) Run() error {
+	baseURL := strings.TrimRight(c.baseURL, "/")
 	bodyInit, err := c.get(baseURL, nil)
 	if err != nil {
-		return false, nil, transientError("initialize gateway session", err)
+		return requestError("initialize gateway session", err)
 	}
 
 	acidRegex := regexp.MustCompile(`ac_id=(\d+)`)
 	acidMatch := acidRegex.FindSubmatch(bodyInit)
 	if len(acidMatch) < 2 {
-		return false, nil, transientError("discover gateway access controller", errors.New("ac_id is missing"))
+		return transientError("discover gateway access controller", errors.New("ac_id is missing"))
 	}
 	acid := string(acidMatch[1])
 
@@ -79,13 +108,13 @@ func (c *Client) Run() (bool, map[string]interface{}, error) {
 	portalParams.Set("theme", "buaa")
 	bodyPortal, err := c.get(baseURL+"/srun_portal_pc", portalParams)
 	if err != nil {
-		return false, nil, transientError("load gateway portal", err)
+		return requestError("load gateway portal", err)
 	}
 
 	ipRegex := regexp.MustCompile(`ip\s*:\s*["']([^"']+)["']`)
 	ipMatch := ipRegex.FindSubmatch(bodyPortal)
 	if len(ipMatch) < 2 {
-		return false, nil, transientError("discover client address", errors.New("IP address is missing"))
+		return transientError("discover client address", errors.New("IP address is missing"))
 	}
 	ip := string(ipMatch[1])
 
@@ -93,27 +122,27 @@ func (c *Client) Run() (bool, map[string]interface{}, error) {
 
 	params := url.Values{}
 	params.Set("callback", "jQuery")
-	params.Set("username", c.ID)
+	params.Set("username", c.id)
 	params.Set("ip", ip)
 	params.Set("_", timestamp)
 
 	bodyChal, err := c.get(baseURL+"/cgi-bin/get_challenge", params)
 	if err != nil {
-		return false, nil, transientError("request login challenge", err)
+		return requestError("request login challenge", err)
 	}
 
 	challenge, err := parseJSONP(bodyChal)
 	if err != nil {
-		return false, nil, transientError("parse login challenge", err)
+		return transientError("parse login challenge", err)
 	}
 	token, ok := challenge["challenge"].(string)
 	if !ok || token == "" {
-		return false, nil, transientError("parse login challenge", errors.New("challenge token is missing"))
+		return transientError("parse login challenge", errors.New("challenge token is missing"))
 	}
 
 	infoData := map[string]string{
-		"username": c.ID,
-		"password": c.Pwd,
+		"username": c.id,
+		"password": c.pwd,
 		"ip":       ip,
 		"acid":     acid,
 		"enc_ver":  "srun_bx1",
@@ -122,15 +151,15 @@ func (c *Client) Run() (bool, map[string]interface{}, error) {
 	infoStr := string(infoBytes)
 
 	encInfo := "{SRBX1}" + srun.GetBase64(srun.GetXEncode(infoStr, token))
-	md5Pwd := srun.GetMD5(c.Pwd, token)
+	md5Pwd := srun.GetMD5(c.pwd, token)
 
-	chkstr := token + c.ID + token + md5Pwd + token + acid + token + ip + token + "200" + token + "1" + token + encInfo
+	chkstr := token + c.id + token + md5Pwd + token + acid + token + ip + token + "200" + token + "1" + token + encInfo
 	chksum := srun.GetSHA1(chkstr)
 
 	loginParams := url.Values{}
 	loginParams.Set("callback", "jQuery")
 	loginParams.Set("action", "login")
-	loginParams.Set("username", c.ID)
+	loginParams.Set("username", c.id)
 	loginParams.Set("password", "{MD5}"+md5Pwd)
 	loginParams.Set("ac_id", acid)
 	loginParams.Set("ip", ip)
@@ -145,21 +174,21 @@ func (c *Client) Run() (bool, map[string]interface{}, error) {
 
 	bodyLogin, err := c.get(baseURL+"/cgi-bin/srun_portal", loginParams)
 	if err != nil {
-		return false, nil, transientError("submit login request", err)
+		return requestError("submit login request", err)
 	}
 
 	result, err := parseJSONP(bodyLogin)
 	if err != nil {
-		return false, nil, transientError("parse login response", err)
+		return transientError("parse login response", err)
 	}
 
 	if result["error"] == "ok" || result["res"] == "ok" {
-		return true, result, nil
+		return nil
 	}
 
 	resCode := gatewayResultCode(result)
 	if resCode == "sign_error" || resCode == "challenge_expire_error" {
-		return false, result, &Error{
+		return &Error{
 			Kind:      ErrorTransient,
 			Operation: "submit login request",
 			Code:      resCode,
@@ -167,12 +196,20 @@ func (c *Client) Run() (bool, map[string]interface{}, error) {
 		}
 	}
 
-	return false, result, &Error{
+	return &Error{
 		Kind:      ErrorAuthentication,
 		Operation: "submit login request",
 		Code:      resCode,
 		Message:   "gateway rejected the login",
 	}
+}
+
+func requestError(operation string, err error) error {
+	var classified *Error
+	if errors.As(err, &classified) {
+		return classified
+	}
+	return transientError(operation, err)
 }
 
 func transientError(operation string, err error) error {
@@ -216,9 +253,9 @@ func (c *Client) get(rawURL string, params url.Values) ([]byte, error) {
 	if params != nil {
 		req.URL.RawQuery = params.Encode()
 	}
-	req.Header = c.Header.Clone()
+	req.Header = c.header.Clone()
 
-	resp, err := c.Client.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		var requestError *url.Error
 		if errors.As(err, &requestError) {

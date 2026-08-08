@@ -56,63 +56,11 @@ jobs:
           go vet ./...
 
   build-all:
-    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
     needs: [prepare-release, validate]
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
-          - goos: windows
-            goarch: amd64
-          - goos: darwin
-            goarch: arm64
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: false
-
-      - name: Build and package
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
-          VERSION: ${{ needs.prepare-release.outputs.tag_name }}
-        run: |
-          binary_name="buaa-login"
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            binary_name="${binary_name}.exe"
-          fi
-
-          go build -ldflags "-s -w -X main.Version=${VERSION}" \
-            -o "$binary_name" \
-            ./cmd/buaa-login
-
-          mkdir -p dist
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            archive_name="buaa-login-${{ matrix.goos }}-${{ matrix.goarch }}.zip"
-            zip "dist/$archive_name" "$binary_name"
-          else
-            archive_name="buaa-login-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz"
-            tar -czf "dist/$archive_name" "$binary_name"
-          fi
-
-      - name: Upload release artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-assets-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/*
-          retention-days: 1
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.prepare-release.outputs.tag_name }}
+      release: true
 
   create-release:
     name: Publish release
@@ -124,7 +72,7 @@ jobs:
       - name: Download release artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: release-assets-*
+          pattern: buaa-login-*
           path: all-assets
           merge-multiple: true
 

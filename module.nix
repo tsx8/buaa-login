@@ -37,6 +37,16 @@ in
       '';
     };
 
+    interface = lib.mkOption {
+      type = lib.types.nullOr lib.types.nonEmptyStr;
+      default = null;
+      example = "wlan0";
+      description = ''
+        Network interface used for gateway requests. When set, buaa-login
+        fails instead of falling back to another interface if binding fails.
+      '';
+    };
+
     wakeUp = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -83,7 +93,19 @@ in
           DynamicUser = true;
 
           LoadCredential = "buaa-login:${cfg.credentialsFile}";
-          ExecStart = "${lib.getExe cfg.package} --credentials-file %d/buaa-login -r ${toString cfg.retry}";
+          ExecStart = lib.escapeShellArgs (
+            [
+              (lib.getExe cfg.package)
+              "--credentials-file"
+              "%d/buaa-login"
+              "-r"
+              (toString cfg.retry)
+            ]
+            ++ lib.optionals (cfg.interface != null) [
+              "--interface"
+              cfg.interface
+            ]
+          );
 
           CapabilityBoundingSet = "";
           LockPersonality = true;

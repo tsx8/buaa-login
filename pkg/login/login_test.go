@@ -16,6 +16,15 @@ func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, errors.New("forced transport failure")
 }
 
+func newTestClient(t *testing.T) *Client {
+	t.Helper()
+	client, err := New(Config{StudentID: "student", Password: "secret"})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	return client
+}
+
 func newPortalServer(t *testing.T, loginResponse string) (*httptest.Server, *atomic.Int32, *atomic.Int32) {
 	t.Helper()
 	var challengeRequests atomic.Int32
@@ -73,15 +82,11 @@ func TestRunUsesNewPortalDiscoveryFlow(t *testing.T) {
 	server, challengeRequests, loginRequests := newPortalServer(t, `jQuery({"error":"ok"})`)
 	defer server.Close()
 
-	client := New("student", "secret")
-	client.BaseURL = server.URL
+	client := newTestClient(t)
+	client.baseURL = server.URL
 
-	success, result, err := client.Run()
-	if err != nil {
+	if err := client.Run(); err != nil {
 		t.Fatalf("Run() error = %v", err)
-	}
-	if !success {
-		t.Fatalf("Run() success = false, result = %#v", result)
 	}
 	if challengeRequests.Load() != 1 || loginRequests.Load() != 1 {
 		t.Fatalf("request counts: challenge=%d login=%d, want 1 each", challengeRequests.Load(), loginRequests.Load())
@@ -92,18 +97,11 @@ func TestRunTreatsAlreadyOnlineResponseAsSuccess(t *testing.T) {
 	server, _, _ := newPortalServer(t, `jQuery({"error":"ok","res":"ok","suc_msg":"ip_already_online_error","ecode":0})`)
 	defer server.Close()
 
-	client := New("student", "secret")
-	client.BaseURL = server.URL
+	client := newTestClient(t)
+	client.baseURL = server.URL
 
-	success, result, err := client.Run()
-	if err != nil {
+	if err := client.Run(); err != nil {
 		t.Fatalf("Run() error = %v", err)
-	}
-	if !success {
-		t.Fatalf("Run() success = false, result = %#v", result)
-	}
-	if got := result["suc_msg"]; got != "ip_already_online_error" {
-		t.Fatalf("Run() suc_msg = %v, want ip_already_online_error", got)
 	}
 }
 
@@ -125,11 +123,11 @@ func TestRunClassifiesGatewayFailures(t *testing.T) {
 			server, _, _ := newPortalServer(t, test.response)
 			defer server.Close()
 
-			client := New("student", "secret")
-			client.BaseURL = server.URL
-			success, result, err := client.Run()
-			if success || result == nil || err == nil {
-				t.Fatalf("Run() = (%v, %#v, %v), want classified failure", success, result, err)
+			client := newTestClient(t)
+			client.baseURL = server.URL
+			err := client.Run()
+			if err == nil {
+				t.Fatal("Run() error = nil, want classified failure")
 			}
 			var classified *Error
 			if !errors.As(err, &classified) {
@@ -143,8 +141,8 @@ func TestRunClassifiesGatewayFailures(t *testing.T) {
 }
 
 func TestNewClientVerifiesGatewayCertificate(t *testing.T) {
-	client := New("student", "secret")
-	transport, ok := client.Client.Transport.(*http.Transport)
+	client := newTestClient(t)
+	transport, ok := client.httpClient.Transport.(*http.Transport)
 	if !ok || transport.TLSClientConfig == nil {
 		t.Fatal("New() transport has no TLS configuration")
 	}
@@ -159,23 +157,23 @@ func TestNewClientVerifiesGatewayCertificate(t *testing.T) {
 		fmt.Fprint(w, `ac_id=78`)
 	}))
 	defer server.Close()
-	client.BaseURL = server.URL
+	client.baseURL = server.URL
 
-	if _, _, err := client.Run(); err == nil || KindOf(err) != ErrorTransient {
+	if err := client.Run(); err == nil || KindOf(err) != ErrorTransient {
 		t.Fatalf("Run() with untrusted certificate error = %v, want transient verification failure", err)
 	}
 }
 
 func TestRunRejectsMissingCredentials(t *testing.T) {
-	_, _, err := New("", "").Run()
+	_, err := New(Config{})
 	if err == nil || KindOf(err) != ErrorConfiguration {
-		t.Fatalf("Run() error = %v, want configuration error", err)
+		t.Fatalf("New() error = %v, want configuration error", err)
 	}
 }
 
 func TestRequestErrorsDoNotExposeQueryValues(t *testing.T) {
-	client := New("student", "secret")
-	client.Client.Transport = failingTransport{}
+	client := newTestClient(t)
+	client.httpClient.Transport = failingTransport{}
 
 	_, err := client.get("https://example.invalid/login", url.Values{
 		"username": {"student"},
