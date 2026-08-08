@@ -21,7 +21,7 @@ in
       type = lib.types.str;
       example = "/run/secrets/buaa-login.json";
       description = ''
-        Absolute runtime path to a JSON file containing the stuid and paswd fields.
+        Absolute runtime path to a JSON file containing the student_id and password fields.
         Keep this file outside the Nix store; it is passed to the service through
         systemd's credential mechanism.
       '';

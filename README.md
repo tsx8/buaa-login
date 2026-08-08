@@ -113,7 +113,7 @@ inputs = {
 凭据文件必须位于 Nix Store 之外，并使用以下 JSON 结构：
 
 ```json
-{"stuid":"23371234","paswd":"MyPassword"}
+{"student_id":"23371234","password":"MyPassword"}
 ```
 
 建议由 sops-nix、agenix 或其他运行时密钥管理工具生成该文件。模块通过 systemd credentials 将文件传给程序。

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -16,8 +15,6 @@ import (
 )
 
 var Version = "dev"
-
-var unquotedCredentialKey = regexp.MustCompile(`([,{]\s*)(stuid|paswd)\s*:`)
 
 const (
 	exitSuccess        = 0
@@ -146,19 +143,16 @@ func readCredentials(path string) (string, string, error) {
 	}
 
 	var credentials struct {
-		ID       string `json:"stuid"`
-		Password string `json:"paswd"`
+		StudentID string `json:"student_id"`
+		Password  string `json:"password"`
 	}
 	if err := json.Unmarshal(data, &credentials); err != nil {
-		normalized := unquotedCredentialKey.ReplaceAll(data, []byte(`${1}"${2}":`))
-		if normalizedErr := json.Unmarshal(normalized, &credentials); normalizedErr != nil {
-			return "", "", fmt.Errorf("invalid JSON: %w", err)
-		}
+		return "", "", fmt.Errorf("invalid JSON: %w", err)
 	}
-	if strings.TrimSpace(credentials.ID) == "" || credentials.Password == "" {
-		return "", "", fmt.Errorf("stuid and paswd must both be non-empty")
+	if strings.TrimSpace(credentials.StudentID) == "" || credentials.Password == "" {
+		return "", "", fmt.Errorf("student_id and password must both be non-empty")
 	}
-	return credentials.ID, credentials.Password, nil
+	return credentials.StudentID, credentials.Password, nil
 }
 
 func getVersion() string {

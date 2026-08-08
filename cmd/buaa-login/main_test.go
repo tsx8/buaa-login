@@ -21,35 +21,45 @@ func (s *stubLoginRunner) Run() error {
 }
 
 func TestReadCredentials(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(path, []byte(`{"student_id":"student","password":"secret with spaces"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	id, password, err := readCredentials(path)
+	if err != nil {
+		t.Fatalf("readCredentials() error = %v", err)
+	}
+	if id != "student" || password != "secret with spaces" {
+		t.Fatalf("readCredentials() = (%q, %q), want student and preserved password", id, password)
+	}
+}
+
+func TestReadCredentialsRejectsIncompleteFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(path, []byte(`{"student_id":"student"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := readCredentials(path); err == nil {
+		t.Fatal("readCredentials() error = nil, want incomplete credentials error")
+	}
+}
+
+func TestReadCredentialsRejectsLegacyAndNonJSONFormats(t *testing.T) {
 	for name, content := range map[string]string{
-		"JSON":      `{"stuid":"student","paswd":"secret with spaces"}`,
-		"bare keys": `{stuid:"student",paswd:"secret with spaces"}`,
+		"legacy fields": `{"stuid":"student","paswd":"secret"}`,
+		"unquoted keys": `{student_id:"student",password:"secret"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "credentials.json")
 			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 				t.Fatal(err)
 			}
-
-			id, password, err := readCredentials(path)
-			if err != nil {
-				t.Fatalf("readCredentials() error = %v", err)
-			}
-			if id != "student" || password != "secret with spaces" {
-				t.Fatalf("readCredentials() = (%q, %q), want student and preserved password", id, password)
+			if _, _, err := readCredentials(path); err == nil {
+				t.Fatal("readCredentials() error = nil, want rejected credentials format")
 			}
 		})
-	}
-}
-
-func TestReadCredentialsRejectsIncompleteFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "credentials.json")
-	if err := os.WriteFile(path, []byte(`{"stuid":"student"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, _, err := readCredentials(path); err == nil {
-		t.Fatal("readCredentials() error = nil, want incomplete credentials error")
 	}
 }
 

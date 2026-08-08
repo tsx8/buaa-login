@@ -99,8 +99,8 @@
           package = self.packages.${system}.default;
           storeCredentials = pkgs.writeText "buaa-login-test-credentials.json" (
             builtins.toJSON {
-              stuid = "test-user";
-              paswd = "test-password";
+              student_id = "test-user";
+              password = "test-password";
             }
           );
           mockPackage = pkgs.writeShellApplication {
@@ -113,8 +113,8 @@
               test "$4" = "3"
               test "$5" = "--interface"
               test "$6" = "eth0"
-              test "$(jq -r .stuid "$2")" = "test-user"
-              test "$(jq -r .paswd "$2")" = "test-password"
+              test "$(jq -r .student_id "$2")" = "test-user"
+              test "$(jq -r .password "$2")" = "test-password"
             '';
           };
           evaluatedModule = nixpkgs.lib.nixosSystem {
@@ -224,7 +224,7 @@
               machine.succeed("systemctl show buaa-login.service -p RestartUSec --value | grep -Fx 30s")
               machine.succeed("systemctl show buaa-login.service -p DynamicUser --value | grep -Fx yes")
               machine.succeed("install -d -m 0700 /run/credentials")
-              machine.succeed("printf '%s' '{\"stuid\":\"test-user\",\"paswd\":\"test-password\"}' > /run/credentials/buaa-login.json")
+              machine.succeed("printf '%s' '{\"student_id\":\"test-user\",\"password\":\"test-password\"}' > /run/credentials/buaa-login.json")
               machine.succeed("chmod 0600 /run/credentials/buaa-login.json")
               machine.succeed("systemctl start buaa-login.service")
               machine.succeed("systemctl show buaa-login.service -p Result --value | grep -Fx success")
